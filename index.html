@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>ARENA.IO — Paper Conquest</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ============ MENU SCREEN ============ -->
+<div id="menu" class="screen">
+  <header class="menu-header">
+    <div class="logo-small">ARENA.IO</div>
+    <div class="header-icons">
+      <button class="icon-btn" id="btn-settings" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+      <button class="icon-btn" id="btn-stats" title="Stats" aria-label="Stats">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main class="menu-main">
+    <h1 class="logo-big">ARENA.IO</h1>
+
+    <div class="play-card">
+      <input id="name-input" type="text" maxlength="14" placeholder="Enter Name" autocomplete="off" spellcheck="false">
+      <button id="btn-play" class="btn-primary">
+        <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M8 5v14l11-7z"/></svg>
+        <span>PLAY</span>
+      </button>
+    </div>
+
+    <section class="skin-section">
+      <div class="skin-header">
+        <h2>Select Skin</h2>
+        <button id="btn-view-all" class="link-btn">View All <span class="arrow">&rarr;</span></button>
+      </div>
+      <div class="skin-row" id="skin-row"></div>
+      <div class="skin-row hidden" id="skin-row-extra"></div>
+    </section>
+  </main>
+
+  <footer class="menu-footer">
+    <span>&copy; 2026 ARENA.IO GAMES</span>
+    <nav><a href="#">Privacy</a><a href="#">Terms</a><a href="#">Support</a></nav>
+  </footer>
+</div>
+
+<!-- ============ GAME SCREEN ============ -->
+<div id="game" class="screen hidden">
+  <canvas id="canvas"></canvas>
+
+  <div class="hud-player-card" id="hud-player-card">
+    <div class="hpc-name"><span class="hpc-swatch" id="hpc-swatch"></span><span id="hpc-name">Player</span></div>
+    <div class="hpc-score-box"><span class="hpc-label">Score</span><span class="hpc-score" id="hpc-score">0</span></div>
+    <div class="hpc-area-row"><span class="hpc-label">Area Controlled</span><span class="hpc-area" id="hpc-area">0%</span></div>
+    <div class="hpc-bar"><div class="hpc-bar-fill" id="hpc-bar-fill"></div></div>
+  </div>
+
+  <div class="hud-leaderboard">
+    <div class="lb-title">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#f97316" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="20" height="20"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>
+      <span>Leaderboard</span>
+      <span class="lb-live">Live</span>
+    </div>
+    <div id="lb-rows"></div>
+  </div>
+
+  <div class="hud-minimap"><canvas id="minimap" width="150" height="150"></canvas></div>
+
+  <button class="icon-btn hud-gear" id="btn-game-settings" aria-label="Settings">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+  </button>
+
+  <div class="game-settings-panel hidden" id="game-settings-panel">
+    <button class="panel-btn" id="btn-resume">Resume</button>
+    <button class="panel-btn" id="btn-sound">Sound: On</button>
+    <button class="panel-btn danger" id="btn-quit">Quit to Menu</button>
+  </div>
+</div>
+
+<!-- ============ GAME OVER OVERLAY ============ -->
+<div id="gameover" class="overlay hidden">
+  <div class="go-inner">
+    <h1 class="go-title">GAME OVER</h1>
+    <p class="go-sub">Arena Match Concluded</p>
+
+    <div class="go-card">
+      <div class="go-player">
+        <div class="go-avatar" id="go-avatar"></div>
+        <div>
+          <div class="go-name" id="go-name">Player One</div>
+          <div class="go-streak">🔥 Win Streak: <span id="go-streak">0</span></div>
+        </div>
+      </div>
+      <div class="go-divider"></div>
+      <div class="go-stats">
+        <div class="go-stat">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2" width="26" height="26"><circle cx="12" cy="12" r="10"/><path d="M12 7l1.5 3.2 3.5.4-2.6 2.4.7 3.5L12 14.8l-3.1 1.7.7-3.5L7 10.6l3.5-.4L12 7z" fill="#2563eb" stroke="none"/></svg>
+          <div class="go-stat-label">SCORE</div>
+          <div class="go-stat-value blue" id="go-score">0</div>
+        </div>
+        <div class="go-stat highlighted">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#f97316" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="26" height="26"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>
+          <div class="go-stat-label">RANK</div>
+          <div class="go-stat-value orange" id="go-rank">#1</div>
+        </div>
+        <div class="go-stat">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="26" height="26"><polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"/><line x1="9" y1="3" x2="9" y2="18"/><line x1="15" y1="6" x2="15" y2="21"/></svg>
+          <div class="go-stat-label">AREA CLAIMED</div>
+          <div class="go-stat-value green" id="go-area">0%</div>
+        </div>
+      </div>
+      <div class="go-level-row">
+        <span id="go-level">Level 1</span>
+        <span class="go-xp" id="go-xp">+0 XP earned</span>
+      </div>
+      <div class="go-level-bar"><div class="go-level-fill" id="go-level-fill"></div></div>
+    </div>
+
+    <div class="go-buttons">
+      <button class="btn-primary" id="btn-play-again">
+        <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M8 5v14l11-7z"/></svg>
+        <span>PLAY AGAIN</span>
+      </button>
+      <button class="btn-secondary" id="btn-back-menu">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="20" height="20"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>
+        <span>BACK TO MENU</span>
+      </button>
+    </div>
+
+    <div class="go-share">
+      <span>Share Results:</span>
+      <button class="icon-btn round" id="btn-share" aria-label="Share">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.6" y1="10.5" x2="15.4" y2="6.5"/><line x1="8.6" y1="13.5" x2="15.4" y2="17.5"/></svg>
+      </button>
+      <button class="icon-btn round" id="btn-copy" aria-label="Copy result">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODALS ============ -->
+<div id="modal-backdrop" class="overlay hidden">
+  <div class="modal" id="modal-box">
+    <h3 id="modal-title">Settings</h3>
+    <div id="modal-body"></div>
+    <button class="btn-primary modal-close" id="modal-close"><span>CLOSE</span></button>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="game.js"></script>
+</body>
+</html>
