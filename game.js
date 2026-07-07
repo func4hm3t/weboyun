@@ -427,8 +427,14 @@ function capture(p) {
 function onArrive(p) {
   const { cx, cy } = p;
   if (cx < 0 || cy < 0 || cx >= GRID || cy >= GRID) {
-    if (p.isHuman) toast('You hit the wall!');
-    kill(p, null);
+    p.cx = clamp(cx, 0, GRID - 1);
+    p.cy = clamp(cy, 0, GRID - 1);
+    p.x = p.cx;
+    p.y = p.cy;
+    if (cx < 0) p.dir = DIRS[0];
+    else if (cx >= GRID) p.dir = DIRS[1];
+    else if (cy < 0) p.dir = DIRS[2];
+    else if (cy >= GRID) p.dir = DIRS[3];
     return;
   }
   const idx = cy * GRID + cx;
