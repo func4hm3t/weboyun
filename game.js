@@ -212,6 +212,18 @@ let lastTime = 0;
 let hudTimer = 0, mmDirty = true;
 let deathHandled = false;
 
+/* ---- multiplayer state ---- */
+let online = false, ws = null, myId = -1;
+let playersById = new Map();
+const canOnline = typeof location !== 'undefined'
+  && /^https?:$/.test(location.protocol)
+  && typeof WebSocket !== 'undefined';
+
+function allPlayers() { return online ? Array.from(playersById.values()) : players; }
+function getP(id) { return online ? playersById.get(id) : players[id]; }
+function hasTrail(p) { return online ? !!p.h : p.trail.length > 0; }
+function sendMsg(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+
 function resize() {
   canvas.width = window.innerWidth * devicePixelRatio;
   canvas.height = window.innerHeight * devicePixelRatio;
@@ -265,8 +277,34 @@ function spawn(p) {
 }
 
 function startGame() {
-  const name = $('name-input').value.trim() || 'Player One';
+  const name = ($('name-input').value.trim() || 'Player One').slice(0, 14);
   store.data.name = name; store.save();
+  if (canOnline) connectOnline(name);
+  else startOffline(name);
+}
+
+function enterGameScreen() {
+  $('hpc-name').textContent = human.name;
+  $('hpc-swatch').style.background = human.color;
+  $('hpc-bar-fill').style.background = human.color;
+  $('menu').classList.add('hidden');
+  $('gameover').classList.add('hidden');
+  $('game').classList.remove('hidden');
+  $('game-settings-panel').classList.add('hidden');
+  applyMapSize();
+  resize();
+  camX = human.x * CELL - window.innerWidth / 2;
+  camY = human.y * CELL - window.innerHeight / 2;
+  running = true;
+  lastTime = performance.now();
+  audio.ensure(); audio.start();
+  mmDirty = true;
+  updateHud();
+  requestAnimationFrame(loop);
+}
+
+function startOffline(name) {
+  online = false; ws = null;
 
   owner = new Int16Array(GRID * GRID).fill(-1);
   trailMap = new Int16Array(GRID * GRID).fill(-1);
@@ -286,28 +324,137 @@ function startGame() {
   }
   players.forEach(spawn);
 
-  camX = human.x * CELL - window.innerWidth / 2;
-  camY = human.y * CELL - window.innerHeight / 2;
-
-  $('hpc-name').textContent = name;
-  $('hpc-swatch').style.background = humanColor;
-  $('hpc-bar-fill').style.background = humanColor;
-
   human.energy = 100;
   boostHeld = false; boostLock = false; boostActive = false;
+  enterGameScreen();
+}
 
-  $('menu').classList.add('hidden');
-  $('gameover').classList.add('hidden');
-  $('game').classList.remove('hidden');
-  $('game-settings-panel').classList.add('hidden');
-  applyMapSize();
-  resize();
+/* ---------------- online client ---------------- */
+function connectOnline(name) {
+  const color = ALL_SKINS[store.data.skin] || SKINS[0];
+  const btnLabel = $('btn-play').querySelector('span');
+  btnLabel.textContent = 'CONNECTING...';
+  const reset = () => { btnLabel.textContent = 'PLAY'; };
 
-  running = true;
-  lastTime = performance.now();
-  audio.ensure(); audio.start();
-  updateHud();
-  requestAnimationFrame(loop);
+  let settled = false;
+  let sock;
+  const fallback = () => {
+    if (settled) return;
+    settled = true;
+    reset();
+    try { sock && sock.close(); } catch (e) {}
+    toast('Server not found — playing offline');
+    startOffline(name);
+  };
+  try {
+    const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
+    sock = new WebSocket(url);
+  } catch (e) { fallback(); return; }
+
+  const timer = setTimeout(fallback, 2000);
+
+  sock.onopen = () => sock.send(JSON.stringify({ t: 'join', n: name, c: color }));
+  sock.onerror = () => {};
+  sock.onclose = () => {
+    if (!settled) { clearTimeout(timer); fallback(); return; }
+    if (online && ws === sock) {
+      online = false; ws = null;
+      if (running || !$('gameover').classList.contains('hidden')) {
+        running = false;
+        $('game').classList.add('hidden');
+        $('gameover').classList.add('hidden');
+        $('menu').classList.remove('hidden');
+        toast('Connection lost');
+      }
+    }
+  };
+  sock.onmessage = ev => {
+    let m;
+    try { m = JSON.parse(ev.data); } catch (e) { return; }
+    if (m.t === 'init') {
+      settled = true;
+      clearTimeout(timer);
+      reset();
+      ws = sock; online = true;
+      initOnline(m);
+    } else if (online && ws === sock) {
+      handleNet(m);
+    }
+  };
+}
+
+function addNetPlayer(d) {
+  const p = {
+    id: d.i, name: d.n, color: d.c, dark: shade(d.c, -0.28),
+    isHuman: false, bot: !!d.b,
+    alive: !!d.a, x: d.x, y: d.y, sx: d.x, sy: d.y,
+    cx: d.cx, cy: d.cy, h: !!d.h,
+    kills: d.k || 0, cells: d.cl || 0,
+    protectedUntil: d.pr > 0 ? performance.now() + d.pr : 0,
+    trail: [], energy: 100
+  };
+  playersById.set(p.id, p);
+  return p;
+}
+
+function initOnline(m) {
+  owner = Int16Array.from(m.o);
+  trailMap = Int16Array.from(m.tr);
+  playersById = new Map();
+  for (const d of m.p) addNetPlayer(d);
+  myId = m.id;
+  human = playersById.get(myId);
+  human.isHuman = true;
+  human.energy = 100;
+  particles = []; flashes = [];
+  deathHandled = false;
+  boostHeld = false; boostLock = false; boostActive = false;
+  enterGameScreen();
+}
+
+function handleNet(m) {
+  if (m.t === 'st') {
+    for (const s of m.p) {
+      // [id, x, y, alive, protMs, cx, cy, hasTrail, kills, cells]
+      const p = playersById.get(s[0]);
+      if (!p) continue;
+      const wasAlive = p.alive;
+      p.sx = s[1]; p.sy = s[2];
+      p.alive = !!s[3];
+      p.protectedUntil = s[4] > 0 ? performance.now() + s[4] : 0;
+      p.cx = s[5]; p.cy = s[6];
+      p.h = !!s[7];
+      p.kills = s[8]; p.cells = s[9];
+      if (!wasAlive && p.alive) { p.x = p.sx; p.y = p.sy; }   // respawn: snap
+    }
+    if (m.od) { for (let i = 0; i < m.od.length; i += 2) owner[m.od[i]] = m.od[i + 1]; if (m.od.length) mmDirty = true; }
+    if (m.td) { for (let i = 0; i < m.td.length; i += 2) trailMap[m.td[i]] = m.td[i + 1]; }
+    if (typeof m.e === 'number' && human) human.energy = m.e;
+  } else if (m.t === 'pj') {
+    const p = addNetPlayer(m.p);
+    if (!p.bot && p.id !== myId) toast(`${p.name} joined the arena`);
+  } else if (m.t === 'pl') {
+    const p = playersById.get(m.i);
+    if (p && !p.bot) toast(`${p.name} left`);
+    playersById.delete(m.i);
+  } else if (m.t === 'cap') {
+    const p = playersById.get(m.i);
+    if (p) {
+      flashes.push({ cells: m.cs, t: 0, color: p.color });
+      if (m.i === myId) audio.capture(m.cs.length);
+    }
+  } else if (m.t === 'kill') {
+    const v = playersById.get(m.vi);
+    if (v) burst(v.x, v.y, v.color, 26);
+    if (m.ki === myId) {
+      audio.kill();
+      toast(`You eliminated ${m.vn}! +${KILL_BONUS}${m.g ? ` and claimed ${m.g} cells` : ''}`);
+    }
+  } else if (m.t === 'dead') {
+    audio.death();
+    if (human) burst(human.x, human.y, human.color, 26);
+    setTimeout(() => endGame(m.s, m.r, m.a), 900);
+  }
 }
 
 /* ---------------- core rules ---------------- */
@@ -610,24 +757,36 @@ function loop(now) {
   let dt = Math.min((now - lastTime) / 1000, 0.05);
   lastTime = now;
 
-  // boost energy: drains while held, refills over time
-  if (human.alive) {
-    const draining = boostHeld && !boostLock && human.energy > 0;
-    if (draining) {
-      human.energy = Math.max(0, human.energy - BOOST_DRAIN * dt);
-      if (human.energy === 0) boostLock = true;      // must recover before re-boosting
-    } else {
-      human.energy = Math.min(100, human.energy + BOOST_REGEN * dt);
-      if (boostLock && human.energy > 20) boostLock = false;
+  if (online) {
+    // smooth towards server positions; snap on big jumps
+    for (const p of playersById.values()) {
+      const ddx = p.sx - p.x, ddy = p.sy - p.y;
+      if (Math.abs(ddx) + Math.abs(ddy) > 4) { p.x = p.sx; p.y = p.sy; }
+      else {
+        const k = Math.min(1, dt * 14);
+        p.x += ddx * k; p.y += ddy * k;
+      }
     }
-    boostActive = draining;
   } else {
-    boostActive = false;
-  }
+    // boost energy: drains while held, refills over time
+    if (human.alive) {
+      const draining = boostHeld && !boostLock && human.energy > 0;
+      if (draining) {
+        human.energy = Math.max(0, human.energy - BOOST_DRAIN * dt);
+        if (human.energy === 0) boostLock = true;      // must recover before re-boosting
+      } else {
+        human.energy = Math.min(100, human.energy + BOOST_REGEN * dt);
+        if (boostLock && human.energy > 20) boostLock = false;
+      }
+      boostActive = draining;
+    } else {
+      boostActive = false;
+    }
 
-  for (const p of players) {
-    if (p.alive) stepPlayer(p, dt);
-    else if (!p.isHuman && now > p.deadUntil && p.deadUntil > 0) { p.deadUntil = 0; spawn(p); }
+    for (const p of players) {
+      if (p.alive) stepPlayer(p, dt);
+      else if (!p.isHuman && now > p.deadUntil && p.deadUntil > 0) { p.deadUntil = 0; spawn(p); }
+    }
   }
 
   // particles
@@ -652,7 +811,7 @@ function loop(now) {
   hudTimer += dt;
   if (hudTimer > 0.2) { hudTimer = 0; updateHud(); }
 
-  if (human.alive) {
+  if (!online && human.alive) {
     const a = areaPct(human);
     if (!human._maxArea || a > human._maxArea) human._maxArea = a;
   }
@@ -689,8 +848,9 @@ function render() {
   for (let y = y0; y < y1; y++) {
     for (let x = x0; x < x1; x++) {
       const o = owner[y * GRID + x];
-      if (o !== -1 && players[o]) {
-        ctx.fillStyle = rgba(players[o].color, 0.42);
+      const q = o !== -1 ? getP(o) : null;
+      if (q) {
+        ctx.fillStyle = rgba(q.color, 0.42);
         ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
       }
     }
@@ -702,8 +862,9 @@ function render() {
   for (let y = y0; y < y1; y++) {
     for (let x = x0; x < x1; x++) {
       const o = owner[y * GRID + x];
-      if (o === -1 || !players[o]) continue;
-      ctx.strokeStyle = players[o].color;
+      const q = o !== -1 ? getP(o) : null;
+      if (!q) continue;
+      ctx.strokeStyle = q.color;
       ctx.beginPath();
       if (x === 0 || owner[y * GRID + x - 1] !== o)          { ctx.moveTo(x * CELL, y * CELL); ctx.lineTo(x * CELL, (y + 1) * CELL); }
       if (x === GRID - 1 || owner[y * GRID + x + 1] !== o)   { ctx.moveTo((x + 1) * CELL, y * CELL); ctx.lineTo((x + 1) * CELL, (y + 1) * CELL); }
@@ -723,16 +884,21 @@ function render() {
     }
   }
 
-  // trails
-  for (const p of players) {
-    if (!p.alive || !p.trail.length) continue;
-    ctx.fillStyle = rgba(p.color, 0.62);
-    for (const idx of p.trail) {
-      const x = idx % GRID, y = (idx / GRID) | 0;
-      if (x >= x0 - 1 && x < x1 + 1 && y >= y0 - 1 && y < y1 + 1)
-        ctx.fillRect(x * CELL + 1.5, y * CELL + 1.5, CELL - 3, CELL - 3);
+  // trails (read from the trail map so it works online and offline)
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const t = trailMap[y * GRID + x];
+      if (t === -1) continue;
+      const q = getP(t);
+      if (!q) continue;
+      ctx.fillStyle = rgba(q.color, 0.62);
+      ctx.fillRect(x * CELL + 1.5, y * CELL + 1.5, CELL - 3, CELL - 3);
     }
-    // connect trail end to moving head
+  }
+  // connect each trail end to its moving head
+  for (const p of allPlayers()) {
+    if (!p.alive || !hasTrail(p)) continue;
+    ctx.fillStyle = rgba(p.color, 0.62);
     ctx.fillRect(
       Math.min(p.x, p.cx) * CELL + 1.5, Math.min(p.y, p.cy) * CELL + 1.5,
       (Math.abs(p.x - p.cx) + 1) * CELL - 3, (Math.abs(p.y - p.cy) + 1) * CELL - 3
@@ -745,7 +911,7 @@ function render() {
   ctx.strokeRect(0, 0, WORLD, WORLD);
 
   // players
-  for (const p of players) {
+  for (const p of allPlayers()) {
     if (!p.alive) continue;
     const px = p.x * CELL + CELL / 2, py = p.y * CELL + CELL / 2;
     const s = CELL * 0.86;
@@ -764,24 +930,51 @@ function render() {
     ctx.stroke();
     ctx.restore();
 
-    // spawn-protection shield
+    // spawn-protection shield: glowing golden bubble + rotating dashes + timer arc
     const nowMs = performance.now();
     if (p.protectedUntil > nowMs) {
-      const pulse = 0.5 + 0.4 * Math.sin(nowMs / 90);
-      ctx.strokeStyle = `rgba(250,204,21,${pulse})`;
-      ctx.lineWidth = 4;
+      const frac = clamp((p.protectedUntil - nowMs) / PROTECT_MS, 0, 1);
+      const pulse = 0.5 + 0.35 * Math.sin(nowMs / 80);
+      const R = CELL * 1.25;
+
+      // filled glow bubble
+      const grad = ctx.createRadialGradient(px, py, CELL * 0.25, px, py, R);
+      grad.addColorStop(0, 'rgba(250,204,21,0.05)');
+      grad.addColorStop(0.7, `rgba(250,204,21,${0.22 + pulse * 0.18})`);
+      grad.addColorStop(1, 'rgba(250,204,21,0.02)');
+      ctx.fillStyle = grad;
       ctx.beginPath();
-      ctx.arc(px, py, CELL * 0.95, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.strokeStyle = `rgba(255,255,255,${pulse * 0.8})`;
-      ctx.lineWidth = 2;
+      ctx.arc(px, py, R, 0, Math.PI * 2);
+      ctx.fill();
+
+      // rotating dashed ring
+      ctx.save();
+      ctx.setLineDash([12, 8]);
+      ctx.lineDashOffset = -nowMs / 10;
+      ctx.strokeStyle = `rgba(245,158,11,${0.65 + pulse * 0.3})`;
+      ctx.lineWidth = 5;
       ctx.beginPath();
-      ctx.arc(px, py, CELL * 1.12, 0, Math.PI * 2);
+      ctx.arc(px, py, R, 0, Math.PI * 2);
       ctx.stroke();
+      ctx.restore();
+
+      // white countdown arc — empties as the shield runs out
+      ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+      ctx.lineWidth = 3.5;
+      ctx.beginPath();
+      ctx.arc(px, py, R + 8, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * frac);
+      ctx.stroke();
+
+      // shield emoji-style badge above
+      ctx.font = '800 15px "Baloo 2", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = `rgba(217,119,6,${0.7 + pulse * 0.3})`;
+      ctx.fillText('🛡 ' + Math.ceil(frac * PROTECT_MS / 1000) + 's', px, py - R - 20);
     }
 
     // name tag for others
-    if (!p.isHuman) {
+    if (p !== human) {
       ctx.font = '700 13px "Baloo 2", sans-serif';
       const w = ctx.measureText(p.name).width + 14;
       ctx.fillStyle = 'rgba(255,255,255,.88)';
@@ -825,8 +1018,9 @@ function drawMinimap() {
     const img = mmBufCtx.createImageData(GRID, GRID);
     for (let i = 0; i < owner.length; i++) {
       const o = owner[i];
-      if (o === -1 || !players[o]) continue;
-      const n = parseInt(players[o].color.slice(1), 16);
+      const q = o !== -1 ? getP(o) : null;
+      if (!q) continue;
+      const n = parseInt(q.color.slice(1), 16);
       img.data[i * 4] = (n >> 16) & 255;
       img.data[i * 4 + 1] = (n >> 8) & 255;
       img.data[i * 4 + 2] = n & 255;
@@ -851,8 +1045,8 @@ function drawMinimap() {
   mmCtx.drawImage(mmBuf, 0, 0, S, S);
   // other players' heads as dots
   const dotR = Math.max(3.5, S * 0.02);
-  for (const p of players) {
-    if (!p.alive || p.isHuman) continue;
+  for (const p of allPlayers()) {
+    if (!p.alive || p === human) continue;
     mmCtx.fillStyle = p.color;
     mmCtx.strokeStyle = '#fff';
     mmCtx.lineWidth = 1.5;
@@ -893,7 +1087,7 @@ $('btn-map-minus').addEventListener('click', () => {
 
 /* ---------------- HUD ---------------- */
 function updateHud() {
-  countCells();
+  if (!online) countCells();          // online: cell counts come from the server
   const sc = score(human), ar = areaPct(human);
   $('hpc-score').textContent = sc.toLocaleString();
   $('hpc-area').textContent = ar.toFixed(1) + '%';
@@ -901,12 +1095,12 @@ function updateHud() {
   $('hpc-energy').textContent = Math.round(human.energy) + '%';
   $('hpc-boost-fill').style.width = clamp(human.energy, 0, 100) + '%';
 
-  const ranked = players.slice().sort((a, b) => score(b) - score(a));
+  const ranked = allPlayers().sort((a, b) => score(b) - score(a));
   const rows = $('lb-rows');
   rows.innerHTML = '';
   ranked.slice(0, 5).forEach((p, i) => {
     const row = document.createElement('div');
-    row.className = 'lb-row' + (p.isHuman ? ' me' : '');
+    row.className = 'lb-row' + (p === human ? ' me' : '');
     row.innerHTML =
       (i < 3 ? `<span class="accent" style="background:${p.color}"></span>` : '') +
       `<span class="lb-rank">${i + 1}</span>` +
@@ -923,7 +1117,7 @@ function escapeHtml(s) {
 
 /* ---------------- game over ---------------- */
 function endGame(finalScore, rank, maxArea) {
-  running = false;
+  if (!online) running = false;   // online we keep spectating behind the overlay
 
   const d = store.data;
   d.games++;
@@ -958,14 +1152,26 @@ function endGame(finalScore, rank, maxArea) {
   human._lastResult = { score: finalScore, rank, area: maxArea };
 }
 
-$('btn-play-again').addEventListener('click', () => { audio.click(); startGame(); });
-$('btn-back-menu').addEventListener('click', () => {
-  audio.click();
+function leaveGame() {
   running = false;
+  if (ws) { const s = ws; ws = null; online = false; try { s.close(); } catch (e) {} }
+  online = false;
+  $('game-settings-panel').classList.add('hidden');
   $('gameover').classList.add('hidden');
   $('game').classList.add('hidden');
   $('menu').classList.remove('hidden');
+}
+
+$('btn-play-again').addEventListener('click', () => {
+  audio.click();
+  if (online && ws) {
+    sendMsg({ t: 'respawn' });
+    $('gameover').classList.add('hidden');
+  } else {
+    startGame();
+  }
 });
+$('btn-back-menu').addEventListener('click', () => { audio.click(); leaveGame(); });
 
 function resultText() {
   const r = human._lastResult || { score: 0, rank: 0, area: 0 };
@@ -1001,13 +1207,7 @@ $('btn-sound').addEventListener('click', function () {
   this.textContent = 'Sound: ' + (store.data.sound ? 'On' : 'Off');
   audio.click();
 });
-$('btn-quit').addEventListener('click', () => {
-  audio.click();
-  running = false;
-  $('game-settings-panel').classList.add('hidden');
-  $('game').classList.add('hidden');
-  $('menu').classList.remove('hidden');
-});
+$('btn-quit').addEventListener('click', () => { audio.click(); leaveGame(); });
 
 /* ---------------- input ---------------- */
 const KEY_DIRS = {
@@ -1016,6 +1216,22 @@ const KEY_DIRS = {
   ArrowDown: DIRS[2],  KeyS: DIRS[2],
   ArrowUp: DIRS[3],    KeyW: DIRS[3]
 };
+
+function steer(d) {
+  if (!human || !human.alive) return;
+  if (online) {
+    sendMsg({ t: 'dir', d: DIRS.indexOf(d) });
+  } else {
+    const last = human.queue.length ? human.queue[human.queue.length - 1] : human.dir;
+    if (!isReverse(d, last) && d !== last && human.queue.length < 2) human.queue.push(d);
+  }
+}
+
+function setBoost(on) {
+  if (boostHeld === on) return;
+  boostHeld = on;
+  if (online) sendMsg({ t: 'boost', on: on ? 1 : 0 });
+}
 
 window.addEventListener('keydown', e => {
   if (!running) {
@@ -1028,20 +1244,17 @@ window.addEventListener('keydown', e => {
   const d = KEY_DIRS[e.code];
   if (d) {
     e.preventDefault();
-    if (human.alive) {
-      const last = human.queue.length ? human.queue[human.queue.length - 1] : human.dir;
-      if (!isReverse(d, last) && d !== last && human.queue.length < 2) human.queue.push(d);
-    }
+    steer(d);
   } else if (e.code === 'Space') {
     e.preventDefault();
-    boostHeld = true;
+    setBoost(true);
   } else if (e.code === 'Escape') {
     $('btn-game-settings').click();
   }
 });
 
 window.addEventListener('keyup', e => {
-  if (e.code === 'Space') boostHeld = false;
+  if (e.code === 'Space') setBoost(false);
 });
 
 $('btn-play').addEventListener('click', startGame);
@@ -1050,10 +1263,10 @@ $('btn-play').addEventListener('click', startGame);
 let touchStart = null;
 canvas.addEventListener('touchstart', e => {
   touchStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-  boostHeld = e.touches.length >= 2;
+  setBoost(e.touches.length >= 2);
 }, { passive: true });
 canvas.addEventListener('touchend', e => {
-  boostHeld = e.touches.length >= 2;
+  setBoost(e.touches.length >= 2);
 }, { passive: true });
 canvas.addEventListener('touchmove', e => {
   if (!touchStart || !running || !human.alive) return;
@@ -1063,8 +1276,7 @@ canvas.addEventListener('touchmove', e => {
   let d;
   if (Math.abs(dx) > Math.abs(dy)) d = dx > 0 ? DIRS[0] : DIRS[1];
   else d = dy > 0 ? DIRS[2] : DIRS[3];
-  const last = human.queue.length ? human.queue[human.queue.length - 1] : human.dir;
-  if (!isReverse(d, last) && d !== last && human.queue.length < 2) human.queue.push(d);
+  steer(d);
   touchStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
 }, { passive: true });
 
