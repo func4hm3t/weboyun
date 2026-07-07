@@ -61,6 +61,8 @@
     <div class="hpc-score-box"><span class="hpc-label">Score</span><span class="hpc-score" id="hpc-score">0</span></div>
     <div class="hpc-area-row"><span class="hpc-label">Area Controlled</span><span class="hpc-area" id="hpc-area">0%</span></div>
     <div class="hpc-bar"><div class="hpc-bar-fill" id="hpc-bar-fill"></div></div>
+    <div class="hpc-area-row"><span class="hpc-label">⚡ Boost <span class="hpc-key">SPACE</span></span><span class="hpc-area" id="hpc-energy">100%</span></div>
+    <div class="hpc-bar"><div class="hpc-bar-fill boost" id="hpc-boost-fill"></div></div>
   </div>
 
   <div class="hud-leaderboard">
@@ -72,14 +74,20 @@
     <div id="lb-rows"></div>
   </div>
 
-  <div class="hud-minimap"><canvas id="minimap" width="150" height="150"></canvas></div>
+  <div class="hud-mini-wrap">
+    <div class="mini-btns">
+      <button class="mini-btn" id="btn-map-plus" aria-label="Bigger map">+</button>
+      <button class="mini-btn" id="btn-map-minus" aria-label="Smaller map">−</button>
+    </div>
+    <div class="hud-minimap" id="minimap-box"><canvas id="minimap" width="300" height="300"></canvas></div>
+  </div>
 
   <button class="icon-btn hud-gear" id="btn-game-settings" aria-label="Settings">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
   </button>
 
   <div class="game-settings-panel hidden" id="game-settings-panel">
-    <button class="panel-btn" id="btn-resume">Resume</button>
+    <button class="panel-btn" id="btn-resume">Close</button>
     <button class="panel-btn" id="btn-sound">Sound: On</button>
     <button class="panel-btn danger" id="btn-quit">Quit to Menu</button>
   </div>

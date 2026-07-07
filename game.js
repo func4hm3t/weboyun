@@ -11,6 +11,11 @@ const WORLD = GRID * CELL;
 const SPEED = 5.6;                // cells per second
 const BOT_COUNT = 6;
 const KILL_BONUS = 300;
+const PROTECT_MS = 2000;          // spawn invincibility
+const BOOST_MULT = 2;             // speed while boosting
+const BOOST_DRAIN = 34;           // energy per second while boosting
+const BOOST_REGEN = 13;           // energy per second while idle
+const MAP_SIZES = [104, 150, 230]; // minimap diameter presets (px)
 
 const DIRS = [
   { x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 }
@@ -51,7 +56,7 @@ const store = {
     try { this.data = JSON.parse(localStorage.getItem('arenaio') || '{}'); }
     catch (e) { this.data = {}; }
     this.data = Object.assign({
-      name: '', skin: 0, sound: true,
+      name: '', skin: 0, sound: true, mapSize: 1,
       xp: 0, streak: 0, games: 0, bestScore: 0, bestRank: 0, kills: 0, bestArea: 0
     }, this.data);
   },
@@ -198,7 +203,8 @@ const mmBufCtx = mmBuf.getContext('2d');
 let owner, trailMap;              // Int16Array per cell: player id or -1
 let players = [];
 let human = null;
-let running = false, paused = false;
+let running = false;
+let boostHeld = false, boostLock = false, boostActive = false;
 let camX = 0, camY = 0;
 let particles = [];
 let flashes = [];                 // capture flash: {cells:[], t}
@@ -218,7 +224,7 @@ function makePlayer(id, name, color, isHuman) {
   return {
     id, name, color, isHuman,
     dark: shade(color, -0.28),
-    alive: false, deadUntil: 0,
+    alive: false, deadUntil: 0, protectedUntil: 0, energy: 100,
     x: 0, y: 0, cx: 0, cy: 0, tx: 0, ty: 0,
     dir: DIRS[0], queue: [],
     trail: [], cells: 0, kills: 0,
@@ -247,6 +253,7 @@ function spawn(p) {
   p.homeX = p.cx; p.homeY = p.cy;
   p.trail = []; p.queue = [];
   p.alive = true;
+  p.protectedUntil = performance.now() + PROTECT_MS;
   p.returning = false; p.turnCount = 0; p.planSteps = 0;
   for (let y = p.cy - 1; y <= p.cy + 1; y++)
     for (let x = p.cx - 1; x <= p.cx + 1; x++)
@@ -286,13 +293,17 @@ function startGame() {
   $('hpc-swatch').style.background = humanColor;
   $('hpc-bar-fill').style.background = humanColor;
 
+  human.energy = 100;
+  boostHeld = false; boostLock = false; boostActive = false;
+
   $('menu').classList.add('hidden');
   $('gameover').classList.add('hidden');
   $('game').classList.remove('hidden');
   $('game-settings-panel').classList.add('hidden');
+  applyMapSize();
   resize();
 
-  running = true; paused = false;
+  running = true;
   lastTime = performance.now();
   audio.ensure(); audio.start();
   updateHud();
@@ -325,10 +336,15 @@ function burst(x, y, color, n) {
 
 function kill(victim, killer) {
   if (!victim || !victim.alive) return;
+  // spawn protection blocks trail kills (walls — killer === null — still kill)
+  if (killer !== null && victim.protectedUntil > performance.now()) {
+    if (killer && killer.isHuman && killer !== victim) toast(`${victim.name} is shielded!`);
+    return;
+  }
   victim.alive = false;
   burst(victim.x, victim.y, victim.color, 26);
 
-  // capture the human's final stats BEFORE the territory evaporates
+  // capture the human's final stats BEFORE the territory changes hands
   let pendingEnd = null;
   if (victim.isHuman && !deathHandled) {
     deathHandled = true;
@@ -343,13 +359,25 @@ function kill(victim, killer) {
   // trail evaporates
   for (const idx of victim.trail) if (trailMap[idx] === victim.id) trailMap[idx] = -1;
   victim.trail = [];
-  // territory evaporates
-  for (let i = 0; i < owner.length; i++) if (owner[i] === victim.id) owner[i] = -1;
+
+  // territory: the killer absorbs it; with no killer it evaporates
+  const absorb = killer && killer !== victim && killer.alive;
+  const gained = [];
+  for (let i = 0; i < owner.length; i++) {
+    if (owner[i] === victim.id) {
+      owner[i] = absorb ? killer.id : -1;
+      if (absorb) gained.push(i);
+    }
+  }
+  if (absorb && gained.length) flashes.push({ cells: gained, t: 0, color: killer.color });
   mmDirty = true;
 
   if (killer && killer !== victim) {
     killer.kills++;
-    if (killer.isHuman) { audio.kill(); toast(`You eliminated ${victim.name}! +${KILL_BONUS}`); }
+    if (killer.isHuman) {
+      audio.kill();
+      toast(`You eliminated ${victim.name}! +${KILL_BONUS}${gained.length ? ` and claimed ${gained.length} cells` : ''}`);
+    }
   }
   if (victim.isHuman) {
     audio.death();
@@ -437,7 +465,8 @@ function chooseNext(p) {
 }
 
 function stepPlayer(p, dt) {
-  let dist = SPEED * dt;
+  const sp = p.isHuman && boostActive ? SPEED * BOOST_MULT : SPEED;
+  let dist = sp * dt;
   let guard = 0;
   while (dist > 0 && p.alive && guard++ < 8) {
     const dx = p.tx - p.x, dy = p.ty - p.y;
@@ -574,7 +603,21 @@ function loop(now) {
   requestAnimationFrame(loop);
   let dt = Math.min((now - lastTime) / 1000, 0.05);
   lastTime = now;
-  if (paused) { render(); return; }
+
+  // boost energy: drains while held, refills over time
+  if (human.alive) {
+    const draining = boostHeld && !boostLock && human.energy > 0;
+    if (draining) {
+      human.energy = Math.max(0, human.energy - BOOST_DRAIN * dt);
+      if (human.energy === 0) boostLock = true;      // must recover before re-boosting
+    } else {
+      human.energy = Math.min(100, human.energy + BOOST_REGEN * dt);
+      if (boostLock && human.energy > 20) boostLock = false;
+    }
+    boostActive = draining;
+  } else {
+    boostActive = false;
+  }
 
   for (const p of players) {
     if (p.alive) stepPlayer(p, dt);
@@ -715,6 +758,22 @@ function render() {
     ctx.stroke();
     ctx.restore();
 
+    // spawn-protection shield
+    const nowMs = performance.now();
+    if (p.protectedUntil > nowMs) {
+      const pulse = 0.5 + 0.4 * Math.sin(nowMs / 90);
+      ctx.strokeStyle = `rgba(250,204,21,${pulse})`;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(px, py, CELL * 0.95, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.strokeStyle = `rgba(255,255,255,${pulse * 0.8})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(px, py, CELL * 1.12, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
     // name tag for others
     if (!p.isHuman) {
       ctx.font = '700 13px "Baloo 2", sans-serif';
@@ -784,17 +843,47 @@ function drawMinimap() {
   mmCtx.stroke();
   mmCtx.imageSmoothingEnabled = false;
   mmCtx.drawImage(mmBuf, 0, 0, S, S);
-  // player position
+  // other players' heads as dots
+  const dotR = Math.max(3.5, S * 0.02);
+  for (const p of players) {
+    if (!p.alive || p.isHuman) continue;
+    mmCtx.fillStyle = p.color;
+    mmCtx.strokeStyle = '#fff';
+    mmCtx.lineWidth = 1.5;
+    mmCtx.beginPath();
+    mmCtx.arc(p.x / GRID * S, p.y / GRID * S, dotR, 0, Math.PI * 2);
+    mmCtx.fill(); mmCtx.stroke();
+  }
+  // the human, white-cored and on top
   if (human && human.alive) {
     const hx = human.x / GRID * S, hy = human.y / GRID * S;
     mmCtx.fillStyle = '#fff';
     mmCtx.strokeStyle = human.color;
     mmCtx.lineWidth = 2.5;
     mmCtx.beginPath();
-    mmCtx.arc(hx, hy, 4.5, 0, Math.PI * 2);
+    mmCtx.arc(hx, hy, dotR * 1.3, 0, Math.PI * 2);
     mmCtx.fill(); mmCtx.stroke();
   }
 }
+
+/* minimap size presets */
+function applyMapSize() {
+  const size = MAP_SIZES[clamp(store.data.mapSize, 0, MAP_SIZES.length - 1)];
+  const box = $('minimap-box');
+  box.style.width = size + 'px';
+  box.style.height = size + 'px';
+  mmCanvas.width = size * 2;      // 2x for crisp rendering
+  mmCanvas.height = size * 2;
+  mmDirty = true;
+}
+$('btn-map-plus').addEventListener('click', () => {
+  store.data.mapSize = clamp(store.data.mapSize + 1, 0, MAP_SIZES.length - 1);
+  store.save(); applyMapSize(); audio.click();
+});
+$('btn-map-minus').addEventListener('click', () => {
+  store.data.mapSize = clamp(store.data.mapSize - 1, 0, MAP_SIZES.length - 1);
+  store.save(); applyMapSize(); audio.click();
+});
 
 /* ---------------- HUD ---------------- */
 function updateHud() {
@@ -803,6 +892,8 @@ function updateHud() {
   $('hpc-score').textContent = sc.toLocaleString();
   $('hpc-area').textContent = ar.toFixed(1) + '%';
   $('hpc-bar-fill').style.width = clamp(ar, 0, 100) + '%';
+  $('hpc-energy').textContent = Math.round(human.energy) + '%';
+  $('hpc-boost-fill').style.width = clamp(human.energy, 0, 100) + '%';
 
   const ranked = players.slice().sort((a, b) => score(b) - score(a));
   const rows = $('lb-rows');
@@ -889,18 +980,15 @@ function copyResult() {
   else toast(txt);
 }
 
-/* ---------------- in-game settings ---------------- */
+/* ---------------- in-game settings (game keeps running — no pause) ---------------- */
 $('btn-game-settings').addEventListener('click', () => {
   audio.click();
-  const panel = $('game-settings-panel');
-  panel.classList.toggle('hidden');
-  paused = !panel.classList.contains('hidden');
+  $('game-settings-panel').classList.toggle('hidden');
   $('btn-sound').textContent = 'Sound: ' + (store.data.sound ? 'On' : 'Off');
 });
 $('btn-resume').addEventListener('click', () => {
   audio.click();
   $('game-settings-panel').classList.add('hidden');
-  paused = false;
 });
 $('btn-sound').addEventListener('click', function () {
   store.data.sound = !store.data.sound; store.save();
@@ -909,7 +997,7 @@ $('btn-sound').addEventListener('click', function () {
 });
 $('btn-quit').addEventListener('click', () => {
   audio.click();
-  running = false; paused = false;
+  running = false;
   $('game-settings-panel').classList.add('hidden');
   $('game').classList.add('hidden');
   $('menu').classList.remove('hidden');
@@ -934,24 +1022,35 @@ window.addEventListener('keydown', e => {
   const d = KEY_DIRS[e.code];
   if (d) {
     e.preventDefault();
-    if (human.alive && !paused) {
+    if (human.alive) {
       const last = human.queue.length ? human.queue[human.queue.length - 1] : human.dir;
       if (!isReverse(d, last) && d !== last && human.queue.length < 2) human.queue.push(d);
     }
+  } else if (e.code === 'Space') {
+    e.preventDefault();
+    boostHeld = true;
   } else if (e.code === 'Escape') {
     $('btn-game-settings').click();
   }
 });
 
+window.addEventListener('keyup', e => {
+  if (e.code === 'Space') boostHeld = false;
+});
+
 $('btn-play').addEventListener('click', startGame);
 
-/* touch: swipe to steer */
+/* touch: swipe to steer; a second finger held down = boost */
 let touchStart = null;
 canvas.addEventListener('touchstart', e => {
   touchStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  boostHeld = e.touches.length >= 2;
+}, { passive: true });
+canvas.addEventListener('touchend', e => {
+  boostHeld = e.touches.length >= 2;
 }, { passive: true });
 canvas.addEventListener('touchmove', e => {
-  if (!touchStart || !running || !human.alive || paused) return;
+  if (!touchStart || !running || !human.alive) return;
   const dx = e.touches[0].clientX - touchStart.x;
   const dy = e.touches[0].clientY - touchStart.y;
   if (Math.abs(dx) < 24 && Math.abs(dy) < 24) return;
