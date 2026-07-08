@@ -309,6 +309,18 @@ let powerupTimer = 0;
 let shake = 0;                    // screen shake magnitude (px)
 let timeScale = 1;                // slow motion on death
 
+/* ---- multiplayer state ---- */
+let online = false, ws = null, myId = -1;
+let playersById = new Map();
+const canOnline = typeof location !== 'undefined'
+  && /^https?:$/.test(location.protocol)
+  && typeof WebSocket !== 'undefined';
+
+function allPlayers() { return online ? Array.from(playersById.values()) : players; }
+function getP(id) { return online ? playersById.get(id) : players[id]; }
+function hasTrail(p) { return online ? !!p.h : p.trail.length > 0; }
+function sendMsg(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+
 function resize() {
   canvas.width = window.innerWidth * devicePixelRatio;
   canvas.height = window.innerHeight * devicePixelRatio;
@@ -322,7 +334,7 @@ function makePlayer(id, name, color, isHuman) {
     id, name, color, isHuman,
     dark: shade(color, -0.28),
     alive: false, deadUntil: 0, protectedUntil: 0, energy: 100,
-    shieldUntil: 0, speedUntil: 0, persona: null,
+    shieldUntil: 0, speedUntil: 0, persona: null, tag: '',
     x: 0, y: 0, cx: 0, cy: 0, tx: 0, ty: 0,
     dir: DIRS[0], queue: [],
     trail: [], cells: 0, kills: 0,
@@ -366,17 +378,48 @@ function spawn(p) {
 }
 
 function startGame() {
-  const name = $('name-input').value.trim() || 'Player One';
+  const name = ($('name-input').value.trim() || 'Player One').slice(0, 14);
   store.data.name = name; store.save();
+  if (canOnline) connectOnline(name);
+  else startOffline(name);
+}
+
+function enterGameScreen() {
+  $('hpc-name').textContent = human.name;
+  $('hpc-swatch').style.background = human.color;
+  $('hpc-bar-fill').style.background = human.color;
+  $('killfeed').innerHTML = '';
+  particles = []; flashes = [];
+  shake = 0; timeScale = 1;
+  boostHeld = false; boostLock = false; boostActive = false;
+
+  $('menu').classList.add('hidden');
+  $('gameover').classList.add('hidden');
+  $('game').classList.remove('hidden');
+  $('game-settings-panel').classList.add('hidden');
+  applyMapSize();
+  resize();
+
+  camX = human.x * CELL + CELL / 2 - window.innerWidth / 2;
+  camY = human.y * CELL + CELL / 2 - window.innerHeight / 2;
+  mmDirty = true;
+  running = true;
+  lastTime = performance.now();
+  audio.ensure(); audio.start();
+  music.start();
+  toast('🛡️ Spawn shield active — you are protected for 2s!');
+  updateHud();
+  requestAnimationFrame(loop);
+}
+
+function startOffline(name) {
+  online = false; ws = null;
 
   owner = new Int16Array(GRID * GRID).fill(-1);
   trailMap = new Int16Array(GRID * GRID).fill(-1);
   players = [];
-  particles = []; flashes = [];
   powerups = []; powerupTimer = 0;
-  shake = 0; timeScale = 1;
   deathHandled = false;
-  $('killfeed').innerHTML = '';
 
   const humanColor = ALL_SKINS[store.data.skin] || SKINS[0];
   human = makePlayer(0, name, humanColor, true);
@@ -388,34 +431,178 @@ function startGame() {
     const nm = names.splice(Math.floor(Math.random() * names.length), 1)[0];
     const bot = makePlayer(i + 1, nm, botColors[i % botColors.length], false);
     bot.persona = PERSONAS[PERSONA_KEYS[i % PERSONA_KEYS.length]];
+    bot.tag = bot.persona.tag;
     players.push(bot);
   }
   players.forEach(spawn);
 
-  camX = human.x * CELL - window.innerWidth / 2;
-  camY = human.y * CELL - window.innerHeight / 2;
-
-  $('hpc-name').textContent = name;
-  $('hpc-swatch').style.background = humanColor;
-  $('hpc-bar-fill').style.background = humanColor;
-
   human.energy = 100;
-  boostHeld = false; boostLock = false; boostActive = false;
+  enterGameScreen();
+}
 
-  $('menu').classList.add('hidden');
-  $('gameover').classList.add('hidden');
-  $('game').classList.remove('hidden');
-  $('game-settings-panel').classList.add('hidden');
-  applyMapSize();
-  resize();
+/* ---------------- online client ---------------- */
+function connectOnline(name) {
+  const color = ALL_SKINS[store.data.skin] || SKINS[0];
+  const btnLabel = $('btn-play').querySelector('span');
+  btnLabel.textContent = 'CONNECTING...';
+  const reset = () => { btnLabel.textContent = 'PLAY'; };
 
-  running = true;
-  lastTime = performance.now();
-  audio.ensure(); audio.start();
-  music.start();
-  toast('🛡️ Spawn shield active — you are protected for 2s!');
-  updateHud();
-  requestAnimationFrame(loop);
+  let settled = false;
+  let sock;
+  const fallback = () => {
+    if (settled) return;
+    settled = true;
+    reset();
+    try { sock && sock.close(); } catch (e) {}
+    toast('Server not found — playing offline vs bots');
+    startOffline(name);
+  };
+  try {
+    const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
+    sock = new WebSocket(url);
+  } catch (e) { fallback(); return; }
+
+  const timer = setTimeout(fallback, 2000);
+
+  sock.onopen = () => sock.send(JSON.stringify({ t: 'join', n: name, c: color }));
+  sock.onerror = () => {};
+  sock.onclose = () => {
+    if (!settled) { clearTimeout(timer); fallback(); return; }
+    if (online && ws === sock) {
+      online = false; ws = null;
+      music.stop();
+      if (running || !$('gameover').classList.contains('hidden')) {
+        running = false;
+        $('game').classList.add('hidden');
+        $('gameover').classList.add('hidden');
+        $('menu').classList.remove('hidden');
+        toast('Connection lost');
+      }
+    }
+  };
+  sock.onmessage = ev => {
+    let m;
+    try { m = JSON.parse(ev.data); } catch (e) { return; }
+    if (m.t === 'init') {
+      settled = true;
+      clearTimeout(timer);
+      reset();
+      ws = sock; online = true;
+      initOnline(m);
+    } else if (online && ws === sock) {
+      handleNet(m);
+    }
+  };
+}
+
+function addNetPlayer(d) {
+  const p = {
+    id: d.i, name: d.n, color: d.c, dark: shade(d.c, -0.28),
+    isHuman: false, bot: !!d.b, tag: d.pt || '',
+    alive: !!d.a, x: d.x, y: d.y, sx: d.x, sy: d.y,
+    cx: d.cx, cy: d.cy, h: !!d.h,
+    kills: d.k || 0, cells: d.cl || 0, sc: d.sc || 0,
+    protectedUntil: d.pr > 0 ? performance.now() + d.pr : 0,
+    shieldUntil: d.sh > 0 ? performance.now() + d.sh : 0,
+    speedUntil: 0, bonus: 0,
+    trail: [], energy: 100
+  };
+  playersById.set(p.id, p);
+  return p;
+}
+
+function initOnline(m) {
+  owner = Int16Array.from(m.o);
+  trailMap = Int16Array.from(m.tr);
+  playersById = new Map();
+  for (const d of m.p) addNetPlayer(d);
+  myId = m.id;
+  human = playersById.get(myId);
+  human.isHuman = true;
+  human.energy = 100;
+  powerups = (m.pu || []).map(u => ({ id: u.i, cx: u.x, cy: u.y, type: u.tp }));
+  deathHandled = false;
+  enterGameScreen();
+  const humans = [...playersById.values()].filter(p => !p.bot).length;
+  toast(`🌐 Online arena — ${humans} player${humans > 1 ? 's' : ''} connected`);
+}
+
+function handleNet(m) {
+  if (m.t === 'st') {
+    for (const s of m.p) {
+      // [id, x, y, alive, protMs, cx, cy, hasTrail, kills, cells, score, shieldMs]
+      const p = playersById.get(s[0]);
+      if (!p) continue;
+      const wasAlive = p.alive;
+      p.sx = s[1]; p.sy = s[2];
+      p.alive = !!s[3];
+      p.protectedUntil = s[4] > 0 ? performance.now() + s[4] : 0;
+      p.cx = s[5]; p.cy = s[6];
+      p.h = !!s[7];
+      p.kills = s[8]; p.cells = s[9]; p.sc = s[10];
+      p.shieldUntil = s[11] > 0 ? performance.now() + s[11] : 0;
+      if (!wasAlive && p.alive) { p.x = p.sx; p.y = p.sy; }   // respawn: snap
+    }
+    if (m.od) { for (let i = 0; i < m.od.length; i += 2) owner[m.od[i]] = m.od[i + 1]; if (m.od.length) mmDirty = true; }
+    if (m.td) { for (let i = 0; i < m.td.length; i += 2) trailMap[m.td[i]] = m.td[i + 1]; }
+    if (typeof m.e === 'number' && human) human.energy = m.e;
+  } else if (m.t === 'pj') {
+    const p = addNetPlayer(m.p);
+    if (!p.bot && p.id !== myId) toast(`${p.name} joined the arena`);
+  } else if (m.t === 'pl') {
+    const p = playersById.get(m.i);
+    if (p && !p.bot) toast(`${p.name} left`);
+    playersById.delete(m.i);
+  } else if (m.t === 'cap') {
+    const p = playersById.get(m.i);
+    if (p) {
+      flashes.push({ cells: m.cs, t: 0, color: p.color });
+      if (m.i === myId) audio.capture(m.cs.length);
+      mmDirty = true;
+    }
+  } else if (m.t === 'kill') {
+    const v = playersById.get(m.vi);
+    if (v) burst(v.x, v.y, v.color, 26);
+    const k = m.ki !== -1 ? playersById.get(m.ki) : null;
+    addKillFeed(
+      m.ki !== -1 && m.ki !== m.vi ? { name: m.kn, dark: k ? k.dark : '#334155' } : null,
+      { name: m.vn, dark: v ? v.dark : '#334155' }
+    );
+    if (m.ki === myId) {
+      audio.kill();
+      shake = Math.max(shake, 8);
+      if (m.cb >= 2) {
+        showCombo(COMBO_NAMES[Math.min(m.cb - 2, COMBO_NAMES.length - 1)]);
+        audio.combo(m.cb);
+        toast(`Combo x${m.cb}! +${(m.cb - 1) * COMBO_BONUS} bonus`);
+      } else {
+        toast(`You eliminated ${m.vn}! +${KILL_BONUS}${m.g ? ` and claimed ${m.g} cells` : ''}`);
+      }
+    }
+  } else if (m.t === 'sha') {
+    const p = playersById.get(m.i);
+    if (p) burst(p.x, p.y, '#60a5fa', 14);
+    if (m.i === myId) toast('🛡️ Your shield absorbed the hit!');
+  } else if (m.t === 'pua') {
+    powerups.push({ id: m.u.i, cx: m.u.x, cy: m.u.y, type: m.u.tp });
+  } else if (m.t === 'pur') {
+    const k = powerups.findIndex(u => u.id === m.i);
+    if (k >= 0) powerups.splice(k, 1);
+    if (m.pi !== -1) {
+      const p = playersById.get(m.pi);
+      if (p) burst(p.cx, p.cy, POWERUP_TYPES[m.tp].color, 16);
+      if (m.pi === myId) {
+        audio.powerup();
+        const labels = { speed: 'Speed boost!', shield: 'Shield up!', bomb: 'Area claimed!', energy: 'Energy refilled!' };
+        toast(`${POWERUP_TYPES[m.tp].icon} ${labels[m.tp]}`);
+      }
+    }
+  } else if (m.t === 'dead') {
+    audio.death();
+    shake = 16;
+    if (human) burst(human.x, human.y, human.color, 26);
+    setTimeout(() => endGame(m.s, m.r, m.a), 900);
+  }
 }
 
 /* ---------------- core rules ---------------- */
@@ -427,7 +614,7 @@ function countCells() {
   }
 }
 
-function score(p) { return p.cells + p.kills * KILL_BONUS + p.bonus; }
+function score(p) { return online ? (p.sc || 0) : p.cells + p.kills * KILL_BONUS + p.bonus; }
 function areaPct(p) { return p.cells / (GRID * GRID) * 100; }
 
 function burst(x, y, color, n) {
@@ -802,33 +989,45 @@ function loop(now) {
   shake = Math.max(0, shake - shake * 6 * rdt);
   if (shake < 0.3) shake = 0;
 
-  // power-up spawning / expiry
-  powerupTimer += rdt;
-  if (powerupTimer >= POWERUP_INTERVAL && powerups.length < POWERUP_MAX) {
-    powerupTimer = 0;
-    spawnPowerup();
-  }
-  for (let i = powerups.length - 1; i >= 0; i--)
-    if (now - powerups[i].born > POWERUP_LIFE) powerups.splice(i, 1);
-
-  // boost energy: drains while held, refills over time
-  if (human.alive) {
-    const draining = boostHeld && !boostLock && human.energy > 0;
-    if (draining) {
-      human.energy = Math.max(0, human.energy - BOOST_DRAIN * dt);
-      if (human.energy === 0) boostLock = true;      // must recover before re-boosting
-    } else {
-      human.energy = Math.min(100, human.energy + BOOST_REGEN * dt);
-      if (boostLock && human.energy > 20) boostLock = false;
+  if (online) {
+    // server drives the simulation: smooth towards its positions, snap on big jumps
+    for (const p of playersById.values()) {
+      const ddx = p.sx - p.x, ddy = p.sy - p.y;
+      if (Math.abs(ddx) + Math.abs(ddy) > 4) { p.x = p.sx; p.y = p.sy; }
+      else {
+        const k = Math.min(1, dt * 14);
+        p.x += ddx * k; p.y += ddy * k;
+      }
     }
-    boostActive = draining;
   } else {
-    boostActive = false;
-  }
+    // power-up spawning / expiry
+    powerupTimer += rdt;
+    if (powerupTimer >= POWERUP_INTERVAL && powerups.length < POWERUP_MAX) {
+      powerupTimer = 0;
+      spawnPowerup();
+    }
+    for (let i = powerups.length - 1; i >= 0; i--)
+      if (now - powerups[i].born > POWERUP_LIFE) powerups.splice(i, 1);
 
-  for (const p of players) {
-    if (p.alive) stepPlayer(p, dt);
-    else if (!p.isHuman && now > p.deadUntil && p.deadUntil > 0) { p.deadUntil = 0; spawn(p); }
+    // boost energy: drains while held, refills over time
+    if (human.alive) {
+      const draining = boostHeld && !boostLock && human.energy > 0;
+      if (draining) {
+        human.energy = Math.max(0, human.energy - BOOST_DRAIN * dt);
+        if (human.energy === 0) boostLock = true;      // must recover before re-boosting
+      } else {
+        human.energy = Math.min(100, human.energy + BOOST_REGEN * dt);
+        if (boostLock && human.energy > 20) boostLock = false;
+      }
+      boostActive = draining;
+    } else {
+      boostActive = false;
+    }
+
+    for (const p of players) {
+      if (p.alive) stepPlayer(p, dt);
+      else if (!p.isHuman && now > p.deadUntil && p.deadUntil > 0) { p.deadUntil = 0; spawn(p); }
+    }
   }
 
   // particles
@@ -853,7 +1052,7 @@ function loop(now) {
   hudTimer += dt;
   if (hudTimer > 0.2) { hudTimer = 0; updateHud(); }
 
-  if (human.alive) {
+  if (!online && human.alive) {
     const a = areaPct(human);
     if (!human._maxArea || a > human._maxArea) human._maxArea = a;
   }
@@ -892,8 +1091,9 @@ function render() {
   for (let y = y0; y < y1; y++) {
     for (let x = x0; x < x1; x++) {
       const o = owner[y * GRID + x];
-      if (o !== -1 && players[o]) {
-        ctx.fillStyle = rgba(players[o].color, 0.42);
+      const q = o !== -1 ? getP(o) : null;
+      if (q) {
+        ctx.fillStyle = rgba(q.color, 0.42);
         ctx.fillRect(x * CELL, y * CELL, CELL, CELL);
       }
     }
@@ -905,8 +1105,9 @@ function render() {
   for (let y = y0; y < y1; y++) {
     for (let x = x0; x < x1; x++) {
       const o = owner[y * GRID + x];
-      if (o === -1 || !players[o]) continue;
-      ctx.strokeStyle = players[o].color;
+      const q = o !== -1 ? getP(o) : null;
+      if (!q) continue;
+      ctx.strokeStyle = q.color;
       ctx.beginPath();
       if (x === 0 || owner[y * GRID + x - 1] !== o)          { ctx.moveTo(x * CELL, y * CELL); ctx.lineTo(x * CELL, (y + 1) * CELL); }
       if (x === GRID - 1 || owner[y * GRID + x + 1] !== o)   { ctx.moveTo((x + 1) * CELL, y * CELL); ctx.lineTo((x + 1) * CELL, (y + 1) * CELL); }
@@ -926,16 +1127,21 @@ function render() {
     }
   }
 
-  // trails
-  for (const p of players) {
-    if (!p.alive || !p.trail.length) continue;
-    ctx.fillStyle = rgba(p.color, 0.62);
-    for (const idx of p.trail) {
-      const x = idx % GRID, y = (idx / GRID) | 0;
-      if (x >= x0 - 1 && x < x1 + 1 && y >= y0 - 1 && y < y1 + 1)
-        ctx.fillRect(x * CELL + 1.5, y * CELL + 1.5, CELL - 3, CELL - 3);
+  // trails (read from the trail map so it works online and offline)
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const t = trailMap[y * GRID + x];
+      if (t === -1) continue;
+      const q = getP(t);
+      if (!q) continue;
+      ctx.fillStyle = rgba(q.color, 0.62);
+      ctx.fillRect(x * CELL + 1.5, y * CELL + 1.5, CELL - 3, CELL - 3);
     }
-    // connect trail end to moving head
+  }
+  // connect each trail end to its moving head
+  for (const p of allPlayers()) {
+    if (!p.alive || !hasTrail(p)) continue;
+    ctx.fillStyle = rgba(p.color, 0.62);
     ctx.fillRect(
       Math.min(p.x, p.cx) * CELL + 1.5, Math.min(p.y, p.cy) * CELL + 1.5,
       (Math.abs(p.x - p.cx) + 1) * CELL - 3, (Math.abs(p.y - p.cy) + 1) * CELL - 3
@@ -967,7 +1173,7 @@ function render() {
   ctx.strokeRect(0, 0, WORLD, WORLD);
 
   // players
-  for (const p of players) {
+  for (const p of allPlayers()) {
     if (!p.alive) continue;
     const px = p.x * CELL + CELL / 2, py = p.y * CELL + CELL / 2;
     const s = CELL * 0.86;
@@ -1030,8 +1236,8 @@ function render() {
     }
 
     // name tag for others
-    if (!p.isHuman) {
-      const label = (p.persona ? p.persona.tag + ' ' : '') + p.name;
+    if (p !== human) {
+      const label = (p.tag ? p.tag + ' ' : '') + p.name;
       ctx.font = '700 13px "Baloo 2", sans-serif';
       const w = ctx.measureText(label).width + 14;
       ctx.fillStyle = 'rgba(255,255,255,.88)';
@@ -1075,8 +1281,9 @@ function drawMinimap() {
     const img = mmBufCtx.createImageData(GRID, GRID);
     for (let i = 0; i < owner.length; i++) {
       const o = owner[i];
-      if (o === -1 || !players[o]) continue;
-      const n = parseInt(players[o].color.slice(1), 16);
+      const q = o !== -1 ? getP(o) : null;
+      if (!q) continue;
+      const n = parseInt(q.color.slice(1), 16);
       img.data[i * 4] = (n >> 16) & 255;
       img.data[i * 4 + 1] = (n >> 8) & 255;
       img.data[i * 4 + 2] = n & 255;
@@ -1101,8 +1308,8 @@ function drawMinimap() {
   mmCtx.drawImage(mmBuf, 0, 0, S, S);
   // other players' heads as dots
   const dotR = Math.max(3.5, S * 0.02);
-  for (const p of players) {
-    if (!p.alive || p.isHuman) continue;
+  for (const p of allPlayers()) {
+    if (!p.alive || p === human) continue;
     mmCtx.fillStyle = p.color;
     mmCtx.strokeStyle = '#fff';
     mmCtx.lineWidth = 1.5;
@@ -1143,7 +1350,7 @@ $('btn-map-minus').addEventListener('click', () => {
 
 /* ---------------- HUD ---------------- */
 function updateHud() {
-  countCells();
+  if (!online) countCells();          // online: cell counts come from the server
   const sc = score(human), ar = areaPct(human);
   $('hpc-score').textContent = sc.toLocaleString();
   $('hpc-area').textContent = ar.toFixed(1) + '%';
@@ -1151,12 +1358,12 @@ function updateHud() {
   $('hpc-energy').textContent = Math.round(human.energy) + '%';
   $('hpc-boost-fill').style.width = clamp(human.energy, 0, 100) + '%';
 
-  const ranked = players.slice().sort((a, b) => score(b) - score(a));
+  const ranked = allPlayers().slice().sort((a, b) => score(b) - score(a));
   const rows = $('lb-rows');
   rows.innerHTML = '';
   ranked.slice(0, 5).forEach((p, i) => {
     const row = document.createElement('div');
-    row.className = 'lb-row' + (p.isHuman ? ' me' : '');
+    row.className = 'lb-row' + (p === human ? ' me' : '');
     row.innerHTML =
       (i < 3 ? `<span class="accent" style="background:${p.color}"></span>` : '') +
       `<span class="lb-rank">${i + 1}</span>` +
@@ -1200,8 +1407,10 @@ function addKillFeed(killer, victim) {
 
 /* ---------------- game over ---------------- */
 function endGame(finalScore, rank, maxArea) {
-  running = false;
-  music.stop();
+  if (!online) {                 // online we keep spectating behind the overlay
+    running = false;
+    music.stop();
+  }
 
   const d = store.data;
   d.games++;
@@ -1242,14 +1451,29 @@ function endGame(finalScore, rank, maxArea) {
   human._lastResult = { score: finalScore, rank, area: maxArea };
 }
 
-$('btn-play-again').addEventListener('click', () => { audio.click(); startGame(); });
-$('btn-back-menu').addEventListener('click', () => {
-  audio.click();
+function leaveGame() {
   running = false;
+  music.stop();
+  if (ws) { const s = ws; ws = null; online = false; try { s.close(); } catch (e) {} }
+  online = false;
+  $('game-settings-panel').classList.add('hidden');
   $('gameover').classList.add('hidden');
   $('game').classList.add('hidden');
   $('menu').classList.remove('hidden');
+  buildSkinRows();
+}
+
+$('btn-play-again').addEventListener('click', () => {
+  audio.click();
+  if (online && ws) {
+    sendMsg({ t: 'respawn' });
+    $('gameover').classList.add('hidden');
+    toast('🛡️ Respawned — protected for 2s!');
+  } else {
+    startGame();
+  }
 });
+$('btn-back-menu').addEventListener('click', () => { audio.click(); leaveGame(); });
 
 function resultText() {
   const r = human._lastResult || { score: 0, rank: 0, area: 0 };
@@ -1287,14 +1511,7 @@ $('btn-sound').addEventListener('click', function () {
   else if (running) music.start();
   audio.click();
 });
-$('btn-quit').addEventListener('click', () => {
-  audio.click();
-  running = false;
-  music.stop();
-  $('game-settings-panel').classList.add('hidden');
-  $('game').classList.add('hidden');
-  $('menu').classList.remove('hidden');
-});
+$('btn-quit').addEventListener('click', () => { audio.click(); leaveGame(); });
 
 /* ---------------- input ---------------- */
 const KEY_DIRS = {
@@ -1303,6 +1520,22 @@ const KEY_DIRS = {
   ArrowDown: DIRS[2],  KeyS: DIRS[2],
   ArrowUp: DIRS[3],    KeyW: DIRS[3]
 };
+
+function steer(d) {
+  if (!human || !human.alive) return;
+  if (online) {
+    sendMsg({ t: 'dir', d: DIRS.indexOf(d) });
+  } else {
+    const last = human.queue.length ? human.queue[human.queue.length - 1] : human.dir;
+    if (!isReverse(d, last) && d !== last && human.queue.length < 2) human.queue.push(d);
+  }
+}
+
+function setBoost(on) {
+  if (boostHeld === on) return;
+  boostHeld = on;
+  if (online) sendMsg({ t: 'boost', on: on ? 1 : 0 });
+}
 
 window.addEventListener('keydown', e => {
   if (!running) {
@@ -1315,20 +1548,17 @@ window.addEventListener('keydown', e => {
   const d = KEY_DIRS[e.code];
   if (d) {
     e.preventDefault();
-    if (human.alive) {
-      const last = human.queue.length ? human.queue[human.queue.length - 1] : human.dir;
-      if (!isReverse(d, last) && d !== last && human.queue.length < 2) human.queue.push(d);
-    }
+    steer(d);
   } else if (e.code === 'Space') {
     e.preventDefault();
-    boostHeld = true;
+    setBoost(true);
   } else if (e.code === 'Escape') {
     $('btn-game-settings').click();
   }
 });
 
 window.addEventListener('keyup', e => {
-  if (e.code === 'Space') boostHeld = false;
+  if (e.code === 'Space') setBoost(false);
 });
 
 $('btn-play').addEventListener('click', startGame);
@@ -1337,10 +1567,10 @@ $('btn-play').addEventListener('click', startGame);
 let touchStart = null;
 canvas.addEventListener('touchstart', e => {
   touchStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-  boostHeld = e.touches.length >= 2;
+  setBoost(e.touches.length >= 2);
 }, { passive: true });
 canvas.addEventListener('touchend', e => {
-  boostHeld = e.touches.length >= 2;
+  setBoost(e.touches.length >= 2);
 }, { passive: true });
 canvas.addEventListener('touchmove', e => {
   if (!touchStart || !running || !human.alive) return;
@@ -1350,8 +1580,7 @@ canvas.addEventListener('touchmove', e => {
   let d;
   if (Math.abs(dx) > Math.abs(dy)) d = dx > 0 ? DIRS[0] : DIRS[1];
   else d = dy > 0 ? DIRS[2] : DIRS[3];
-  const last = human.queue.length ? human.queue[human.queue.length - 1] : human.dir;
-  if (!isReverse(d, last) && d !== last && human.queue.length < 2) human.queue.push(d);
+  steer(d);
   touchStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
 }, { passive: true });
 
