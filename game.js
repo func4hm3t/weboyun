@@ -17,6 +17,32 @@ const BOOST_DRAIN = 34;           // energy per second while boosting
 const BOOST_REGEN = 13;           // energy per second while idle
 const MAP_SIZES = [104, 150, 230]; // minimap diameter presets (px)
 
+const POWERUP_TYPES = {
+  speed:  { icon: '⚡', color: '#f59e0b', dur: 5000 },
+  shield: { icon: '🛡️', color: '#3b82f6', dur: 7000 },
+  bomb:   { icon: '💥', color: '#a855f7', dur: 0 },
+  energy: { icon: '🔋', color: '#22c55e', dur: 0 }
+};
+const POWERUP_KEYS = Object.keys(POWERUP_TYPES);
+const POWERUP_INTERVAL = 5;       // seconds between spawns
+const POWERUP_MAX = 6;            // max on the field at once
+const POWERUP_LIFE = 20000;       // ms before an unclaimed pickup despawns
+
+// bot personalities: hunters chase kills, farmers grow quietly, expanders carve huge loops
+const PERSONAS = {
+  hunter:   { tag: '⚔️', maxOutMin: 20, maxOutMax: 40, threat: 4, killChance: 0.98, planMin: 4, planMax: 10 },
+  farmer:   { tag: '🌾', maxOutMin: 10, maxOutMax: 18, threat: 9, killChance: 0.5,  planMin: 3, planMax: 6 },
+  expander: { tag: '🗺️', maxOutMin: 28, maxOutMax: 50, threat: 6, killChance: 0.75, planMin: 6, planMax: 12 }
+};
+const PERSONA_KEYS = Object.keys(PERSONAS);
+
+// level required to use each skin, in ALL_SKINS order (first row is free)
+const SKIN_UNLOCK_LEVELS = [1, 1, 1, 1, 1, 2, 3, 5, 7, 10];
+
+const COMBO_WINDOW = 4000;        // ms between kills to keep a streak alive
+const COMBO_BONUS = 150;          // extra points per streak step
+const COMBO_NAMES = ['DOUBLE KILL!', 'TRIPLE KILL!', 'RAMPAGE!', 'GODLIKE!'];
+
 const DIRS = [
   { x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 }
 ];
@@ -98,22 +124,87 @@ const audio = {
   click()   { this.beep(660, 0.07, 'square', 0.05); },
   capture(sz) { this.beep(420 + Math.min(sz, 200) * 2, 0.16, 'triangle', 0.14, 160); },
   kill()    { this.beep(190, 0.22, 'sawtooth', 0.14, -80); },
+  powerup() { this.beep(760, 0.18, 'triangle', 0.14, 240); },
+  deny()    { this.beep(140, 0.15, 'square', 0.08); },
+  combo(n)  { this.beep(500 + n * 120, 0.22, 'square', 0.15, 220); },
   death()   { this.beep(320, 0.5, 'sawtooth', 0.16, -260); },
   start()   { this.beep(520, 0.12, 'triangle', 0.1, 140); }
+};
+
+/* ---------------- background music (generative synth loop) ----------------
+   132 bpm, i–VI–iv–VII minor progression. A bass pulse always plays;
+   the arpeggio and hi-hat layers fade in as the player claims more area. */
+const music = {
+  playing: false, timer: null, step: 0, nextTime: 0, gain: null,
+  start() {
+    if (!store.data.sound || this.playing) return;
+    audio.ensure();
+    if (!audio.ctx) return;
+    if (!this.gain) {
+      this.gain = audio.ctx.createGain();
+      this.gain.connect(audio.ctx.destination);
+    }
+    this.gain.gain.value = 0.05;
+    this.playing = true;
+    this.step = 0;
+    this.nextTime = audio.ctx.currentTime + 0.05;
+    this.timer = setInterval(() => this.schedule(), 100);
+  },
+  stop() {
+    this.playing = false;
+    clearInterval(this.timer);
+  },
+  note(freq, t, dur, type, vol) {
+    const o = audio.ctx.createOscillator(), g = audio.ctx.createGain();
+    o.type = type;
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(g).connect(this.gain);
+    o.start(t); o.stop(t + dur);
+  },
+  schedule() {
+    if (!this.playing) return;
+    const spb = 60 / 132 / 2;                    // eighth notes
+    while (this.nextTime < audio.ctx.currentTime + 0.3) {
+      this.playStep(this.step, this.nextTime);
+      this.nextTime += spb;
+      this.step = (this.step + 1) % 64;
+    }
+  },
+  playStep(s, t) {
+    const chords = [[0, 3, 7, 10], [-4, 0, 3, 8], [5, 8, 12, 15], [-2, 2, 5, 10]];
+    const chord = chords[(s / 16) | 0];
+    const semi = n => 110 * Math.pow(2, n / 12); // root A2
+    const intensity = human && human.alive ? clamp(areaPct(human) / 30, 0, 1) : 0;
+    if (s % 4 === 0) this.note(semi(chord[0]) / 2, t, 0.3, 'triangle', 0.55);
+    if (s % 2 === 0) this.note(semi(chord[(s / 2) % 4] + 12), t, 0.13, 'square', 0.06 + 0.14 * intensity);
+    if (intensity > 0.45 && s % 4 === 2) this.note(5500 + Math.random() * 1500, t, 0.03, 'square', 0.05);
+  }
 };
 
 /* =====================================================================
    MENU
    ===================================================================== */
 function buildSkinRows() {
+  const lvl = levelFromXp(store.data.xp).lvl;
+  if (lvl < (SKIN_UNLOCK_LEVELS[store.data.skin] || 1)) { store.data.skin = 0; store.save(); }
   const make = (row, colors, offset) => {
     row.innerHTML = '';
     colors.forEach((c, i) => {
       const idx = offset + i;
+      const needed = SKIN_UNLOCK_LEVELS[idx] || 1;
+      const locked = lvl < needed;
       const el = document.createElement('div');
-      el.className = 'skin' + (store.data.skin === idx ? ' selected' : '');
-      el.innerHTML = `<div class="skin-square" style="background:${c};box-shadow:inset 0 -5px 0 ${rgba(c,0)}, 0 4px 10px ${rgba(c,.35)}"></div><div class="skin-check">✓</div>`;
+      el.className = 'skin' + (store.data.skin === idx ? ' selected' : '') + (locked ? ' locked' : '');
+      el.innerHTML = `<div class="skin-square" style="background:${c};box-shadow:inset 0 -5px 0 ${rgba(c,0)}, 0 4px 10px ${rgba(c,.35)}"></div>` +
+        (locked ? `<div class="skin-lock">🔒<span>Lv ${needed}</span></div>` : `<div class="skin-check">✓</div>`);
       el.addEventListener('click', () => {
+        if (locked) {
+          audio.deny();
+          toast(`Reach level ${needed} to unlock this skin!`);
+          return;
+        }
         store.data.skin = idx; store.save();
         document.querySelectorAll('.skin').forEach(s => s.classList.remove('selected'));
         el.classList.add('selected');
@@ -162,6 +253,8 @@ $('btn-settings').addEventListener('click', () => {
   $('tgl-sound').addEventListener('click', function () {
     store.data.sound = !store.data.sound; store.save();
     this.classList.toggle('on', store.data.sound);
+    if (!store.data.sound) music.stop();
+    else if (running) music.start();
     audio.click();
   });
 });
@@ -211,6 +304,10 @@ let flashes = [];                 // capture flash: {cells:[], t}
 let lastTime = 0;
 let hudTimer = 0, mmDirty = true;
 let deathHandled = false;
+let powerups = [];
+let powerupTimer = 0;
+let shake = 0;                    // screen shake magnitude (px)
+let timeScale = 1;                // slow motion on death
 
 function resize() {
   canvas.width = window.innerWidth * devicePixelRatio;
@@ -225,9 +322,11 @@ function makePlayer(id, name, color, isHuman) {
     id, name, color, isHuman,
     dark: shade(color, -0.28),
     alive: false, deadUntil: 0, protectedUntil: 0, energy: 100,
+    shieldUntil: 0, speedUntil: 0, persona: null,
     x: 0, y: 0, cx: 0, cy: 0, tx: 0, ty: 0,
     dir: DIRS[0], queue: [],
     trail: [], cells: 0, kills: 0,
+    comboCount: 0, comboLast: 0, bonus: 0,
     // bot brain
     planSteps: 0, turnSign: 1, turnCount: 0, maxOut: 20,
     returning: false, homeX: 0, homeY: 0
@@ -254,6 +353,8 @@ function spawn(p) {
   p.trail = []; p.queue = [];
   p.alive = true;
   p.protectedUntil = performance.now() + PROTECT_MS;
+  p.shieldUntil = 0; p.speedUntil = 0;
+  p.comboCount = 0; p.comboLast = 0;
   p.returning = false; p.turnCount = 0; p.planSteps = 0;
   for (let y = p.cy - 1; y <= p.cy + 1; y++)
     for (let x = p.cx - 1; x <= p.cx + 1; x++)
@@ -272,7 +373,10 @@ function startGame() {
   trailMap = new Int16Array(GRID * GRID).fill(-1);
   players = [];
   particles = []; flashes = [];
+  powerups = []; powerupTimer = 0;
+  shake = 0; timeScale = 1;
   deathHandled = false;
+  $('killfeed').innerHTML = '';
 
   const humanColor = ALL_SKINS[store.data.skin] || SKINS[0];
   human = makePlayer(0, name, humanColor, true);
@@ -282,7 +386,9 @@ function startGame() {
   const names = BOT_NAMES.slice();
   for (let i = 0; i < BOT_COUNT; i++) {
     const nm = names.splice(Math.floor(Math.random() * names.length), 1)[0];
-    players.push(makePlayer(i + 1, nm, botColors[i % botColors.length], false));
+    const bot = makePlayer(i + 1, nm, botColors[i % botColors.length], false);
+    bot.persona = PERSONAS[PERSONA_KEYS[i % PERSONA_KEYS.length]];
+    players.push(bot);
   }
   players.forEach(spawn);
 
@@ -306,6 +412,8 @@ function startGame() {
   running = true;
   lastTime = performance.now();
   audio.ensure(); audio.start();
+  music.start();
+  toast('🛡️ Spawn shield active — you are protected for 2s!');
   updateHud();
   requestAnimationFrame(loop);
 }
@@ -319,7 +427,7 @@ function countCells() {
   }
 }
 
-function score(p) { return p.cells + p.kills * KILL_BONUS; }
+function score(p) { return p.cells + p.kills * KILL_BONUS + p.bonus; }
 function areaPct(p) { return p.cells / (GRID * GRID) * 100; }
 
 function burst(x, y, color, n) {
@@ -341,8 +449,19 @@ function kill(victim, killer) {
     if (killer && killer.isHuman && killer !== victim) toast(`${victim.name} is shielded!`);
     return;
   }
+  // pickup shield absorbs one lethal hit, then breaks
+  if (killer !== null && victim.shieldUntil > performance.now()) {
+    victim.shieldUntil = 0;
+    burst(victim.x, victim.y, '#60a5fa', 14);
+    if (victim.isHuman) toast('🛡️ Your shield absorbed the hit!');
+    else if (killer && killer.isHuman && killer !== victim) toast(`${victim.name}'s shield absorbed it!`);
+    return;
+  }
   victim.alive = false;
   burst(victim.x, victim.y, victim.color, 26);
+  addKillFeed(killer, victim);
+  if (victim.isHuman) shake = 16;
+  else if (killer && killer.isHuman) shake = 8;
 
   // capture the human's final stats BEFORE the territory changes hands
   let pendingEnd = null;
@@ -374,13 +493,25 @@ function kill(victim, killer) {
 
   if (killer && killer !== victim) {
     killer.kills++;
+    // kill streak: chained kills inside the combo window earn escalating bonuses
+    const nowK = performance.now();
+    killer.comboCount = nowK - killer.comboLast < COMBO_WINDOW ? killer.comboCount + 1 : 1;
+    killer.comboLast = nowK;
+    if (killer.comboCount >= 2) killer.bonus += (killer.comboCount - 1) * COMBO_BONUS;
     if (killer.isHuman) {
       audio.kill();
-      toast(`You eliminated ${victim.name}! +${KILL_BONUS}${gained.length ? ` and claimed ${gained.length} cells` : ''}`);
+      if (killer.comboCount >= 2) {
+        showCombo(COMBO_NAMES[Math.min(killer.comboCount - 2, COMBO_NAMES.length - 1)]);
+        audio.combo(killer.comboCount);
+        toast(`Combo x${killer.comboCount}! +${(killer.comboCount - 1) * COMBO_BONUS} bonus`);
+      } else {
+        toast(`You eliminated ${victim.name}! +${KILL_BONUS}${gained.length ? ` and claimed ${gained.length} cells` : ''}`);
+      }
     }
   }
   if (victim.isHuman) {
     audio.death();
+    timeScale = 0.3;                             // slow-motion send-off
     if (pendingEnd) setTimeout(pendingEnd, 900);
   } else {
     victim.deadUntil = performance.now() + randInt(2500, 5000);
@@ -424,6 +555,44 @@ function capture(p) {
   p.homeX = p.cx; p.homeY = p.cy;
 }
 
+/* ---------------- power-ups ---------------- */
+function spawnPowerup() {
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const cx = randInt(2, GRID - 3), cy = randInt(2, GRID - 3);
+    if (trailMap[cy * GRID + cx] !== -1) continue;
+    if (powerups.some(u => u.cx === cx && u.cy === cy)) continue;
+    powerups.push({ cx, cy, type: pick(POWERUP_KEYS), born: performance.now() });
+    return;
+  }
+}
+
+function applyPowerup(p, type) {
+  const now = performance.now();
+  if (type === 'speed') {
+    p.speedUntil = now + POWERUP_TYPES.speed.dur;
+  } else if (type === 'shield') {
+    p.shieldUntil = now + POWERUP_TYPES.shield.dur;
+  } else if (type === 'energy') {
+    if (p.isHuman) { p.energy = 100; boostLock = false; }
+    else p.speedUntil = now + 2500;              // bots convert it to a short sprint
+  } else if (type === 'bomb') {
+    // instantly claim a 5x5 patch (never eats trail cells — that would corrupt captures)
+    const claimed = [];
+    for (let y = Math.max(0, p.cy - 2); y <= Math.min(GRID - 1, p.cy + 2); y++)
+      for (let x = Math.max(0, p.cx - 2); x <= Math.min(GRID - 1, p.cx + 2); x++) {
+        const i = y * GRID + x;
+        if (owner[i] !== p.id && trailMap[i] === -1) { owner[i] = p.id; claimed.push(i); }
+      }
+    if (claimed.length) { flashes.push({ cells: claimed, t: 0, color: p.color }); mmDirty = true; }
+  }
+  burst(p.cx, p.cy, POWERUP_TYPES[type].color, 16);
+  if (p.isHuman) {
+    audio.powerup();
+    const labels = { speed: 'Speed boost!', shield: 'Shield up!', bomb: 'Area claimed!', energy: 'Energy refilled!' };
+    toast(`${POWERUP_TYPES[type].icon} ${labels[type]}`);
+  }
+}
+
 function onArrive(p) {
   const { cx, cy } = p;
   if (cx < 0 || cy < 0 || cx >= GRID || cy >= GRID) {
@@ -438,6 +607,12 @@ function onArrive(p) {
     return;
   }
   const idx = cy * GRID + cx;
+
+  for (let i = powerups.length - 1; i >= 0; i--) {
+    if (powerups[i].cx === cx && powerups[i].cy === cy) {
+      applyPowerup(p, powerups.splice(i, 1)[0].type);
+    }
+  }
 
   // stepping on a trail kills the trail's owner (yourself included)
   const t = trailMap[idx];
@@ -471,7 +646,8 @@ function chooseNext(p) {
 }
 
 function stepPlayer(p, dt) {
-  const sp = p.isHuman && boostActive ? SPEED * BOOST_MULT : SPEED;
+  const fast = (p.isHuman && boostActive) || p.speedUntil > performance.now();
+  const sp = fast ? SPEED * BOOST_MULT : SPEED;
   let dist = sp * dt;
   let guard = 0;
   while (dist > 0 && p.alive && guard++ < 8) {
@@ -541,6 +717,7 @@ function sameDir(a, b) { return a.x === b.x && a.y === b.y; }
 function normDir(d) { return DIRS.find(k => sameDir(k, d)); }
 
 function botThink(b) {
+  const P = b.persona || PERSONAS.expander;
   const idx = b.cy * GRID + b.cx;
   const home = owner[idx] === b.id;
   const candidates = DIRS.filter(d => !isReverse(d, b.dir));
@@ -556,13 +733,13 @@ function botThink(b) {
     for (const d of pool) {
       const n = (b.cy + d.y) * GRID + (b.cx + d.x);
       const t = trailMap[n];
-      if (t !== -1 && t !== b.id && Math.random() < 0.85) return d;
+      if (t !== -1 && t !== b.id && Math.random() < P.killChance) return d;
     }
   }
 
   if (!home || b.trail.length) {
     // we are outside with a trail
-    const threat = enemyHeadNear(b, 6);
+    const threat = enemyHeadNear(b, P.threat);
     if (threat || b.trail.length >= b.maxOut) b.returning = true;
 
     if (b.returning) {
@@ -572,7 +749,7 @@ function botThink(b) {
     }
     // carve a loop: straight runs joined by same-sign turns
     if (--b.planSteps <= 0) {
-      b.planSteps = randInt(3, 8);
+      b.planSteps = randInt(P.planMin, P.planMax);
       b.turnCount++;
       if (b.turnCount >= 3) b.returning = true;
       const turned = normDir(rotate(b.dir, b.turnSign));
@@ -589,8 +766,18 @@ function botThink(b) {
   b.homeX = b.cx; b.homeY = b.cy;
   if (b.planSteps <= 0) {
     b.turnSign = Math.random() < 0.5 ? 1 : -1;
-    b.planSteps = randInt(4, 9);
-    b.maxOut = randInt(16, 34);
+    b.planSteps = randInt(P.planMin, P.planMax);
+    b.maxOut = randInt(P.maxOutMin, P.maxOutMax);
+  }
+  // hunters stalk the nearest unshielded prey even from home turf
+  if (P === PERSONAS.hunter) {
+    let prey = null, pd = Infinity;
+    for (const q of players) {
+      if (q === b || !q.alive || q.protectedUntil > performance.now()) continue;
+      const d = Math.abs(q.cx - b.cx) + Math.abs(q.cy - b.cy);
+      if (d < pd) { pd = d; prey = q; }
+    }
+    if (prey && pd < 18 && Math.random() < 0.7) return towards(b, prey.cx, prey.cy, pool);
   }
   // drift away from walls
   const margin = 6;
@@ -607,8 +794,22 @@ function botThink(b) {
 function loop(now) {
   if (!running) return;
   requestAnimationFrame(loop);
-  let dt = Math.min((now - lastTime) / 1000, 0.05);
+  const rdt = Math.min((now - lastTime) / 1000, 0.05);
   lastTime = now;
+  const dt = rdt * timeScale;
+
+  // screen shake decays in real time
+  shake = Math.max(0, shake - shake * 6 * rdt);
+  if (shake < 0.3) shake = 0;
+
+  // power-up spawning / expiry
+  powerupTimer += rdt;
+  if (powerupTimer >= POWERUP_INTERVAL && powerups.length < POWERUP_MAX) {
+    powerupTimer = 0;
+    spawnPowerup();
+  }
+  for (let i = powerups.length - 1; i >= 0; i--)
+    if (now - powerups[i].born > POWERUP_LIFE) powerups.splice(i, 1);
 
   // boost energy: drains while held, refills over time
   if (human.alive) {
@@ -666,7 +867,9 @@ function render() {
   ctx.fillStyle = '#e8edf6';                     // out-of-bounds
   ctx.fillRect(0, 0, W, H);
   ctx.save();
-  ctx.translate(-camX, -camY);
+  const shakeX = shake ? (Math.random() - 0.5) * shake : 0;
+  const shakeY = shake ? (Math.random() - 0.5) * shake : 0;
+  ctx.translate(-camX + shakeX, -camY + shakeY);
 
   // playfield
   ctx.fillStyle = '#f5f8fd';
@@ -739,6 +942,25 @@ function render() {
     );
   }
 
+  // power-ups
+  const nowT = performance.now();
+  for (const u of powerups) {
+    if (u.cx < x0 - 1 || u.cx > x1 || u.cy < y0 - 1 || u.cy > y1) continue;
+    const ux = u.cx * CELL + CELL / 2, uy = u.cy * CELL + CELL / 2;
+    const pulse = 1 + 0.12 * Math.sin(nowT / 160 + u.cx);
+    const info = POWERUP_TYPES[u.type];
+    ctx.fillStyle = 'rgba(255,255,255,.92)';
+    ctx.strokeStyle = info.color;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(ux, uy, CELL * 0.42 * pulse, 0, Math.PI * 2);
+    ctx.fill(); ctx.stroke();
+    ctx.font = `${Math.round(CELL * 0.5 * pulse)}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(info.icon, ux, uy + 1);
+  }
+
   // world border
   ctx.strokeStyle = '#94a3b8';
   ctx.lineWidth = 5;
@@ -764,33 +986,61 @@ function render() {
     ctx.stroke();
     ctx.restore();
 
-    // spawn-protection shield
+    // spawn-protection shield: glowing bubble + depleting timer arc + countdown badge
     const nowMs = performance.now();
     if (p.protectedUntil > nowMs) {
-      const pulse = 0.5 + 0.4 * Math.sin(nowMs / 90);
-      ctx.strokeStyle = `rgba(250,204,21,${pulse})`;
+      const remain = (p.protectedUntil - nowMs) / PROTECT_MS;   // 1 → 0
+      const pulse = 0.75 + 0.25 * Math.sin(nowMs / 80);
+      const R = CELL * 1.15;
+      ctx.fillStyle = `rgba(250,204,21,${0.22 * pulse})`;
+      ctx.beginPath();
+      ctx.arc(px, py, R, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(250,204,21,.3)';
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.arc(px, py, R, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.strokeStyle = `rgba(245,158,11,${0.95 * pulse})`;
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.arc(px, py, R, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * remain);
+      ctx.stroke();
+
+      ctx.font = '800 13px "Baloo 2", sans-serif';
+      const txt = '🛡️ ' + (Math.ceil((p.protectedUntil - nowMs) / 100) / 10).toFixed(1) + 's';
+      const tw = ctx.measureText(txt).width + 14;
+      ctx.fillStyle = 'rgba(255,255,255,.92)';
+      roundRect(ctx, px - tw / 2, py + R + 5, tw, 20, 8);
+      ctx.fill();
+      ctx.fillStyle = '#b45309';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(txt, px, py + R + 15.5);
+    }
+
+    // pickup-shield ring (blue, distinct from the yellow spawn shield)
+    if (p.shieldUntil > nowMs) {
+      const pulse = 0.55 + 0.35 * Math.sin(nowMs / 110);
+      ctx.strokeStyle = `rgba(59,130,246,${pulse})`;
       ctx.lineWidth = 4;
       ctx.beginPath();
-      ctx.arc(px, py, CELL * 0.95, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.strokeStyle = `rgba(255,255,255,${pulse * 0.8})`;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(px, py, CELL * 1.12, 0, Math.PI * 2);
+      ctx.arc(px, py, CELL * 1.02, 0, Math.PI * 2);
       ctx.stroke();
     }
 
     // name tag for others
     if (!p.isHuman) {
+      const label = (p.persona ? p.persona.tag + ' ' : '') + p.name;
       ctx.font = '700 13px "Baloo 2", sans-serif';
-      const w = ctx.measureText(p.name).width + 14;
+      const w = ctx.measureText(label).width + 14;
       ctx.fillStyle = 'rgba(255,255,255,.88)';
       roundRect(ctx, px - w / 2, py - CELL * 1.35, w, 20, 8);
       ctx.fill();
       ctx.fillStyle = p.dark;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(p.name, px, py - CELL * 1.35 + 10.5);
+      ctx.fillText(label, px, py - CELL * 1.35 + 10.5);
     }
   }
 
@@ -921,9 +1171,37 @@ function escapeHtml(s) {
   return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+/* ---------------- combo banner ---------------- */
+function showCombo(txt) {
+  const b = $('combo-banner');
+  b.textContent = txt;
+  b.classList.remove('hidden', 'pop');
+  void b.offsetWidth;                            // restart the CSS animation
+  b.classList.add('pop');
+  clearTimeout(b._tm);
+  b._tm = setTimeout(() => b.classList.add('hidden'), 1400);
+}
+
+/* ---------------- kill feed ---------------- */
+function addKillFeed(killer, victim) {
+  const kf = $('killfeed');
+  const row = document.createElement('div');
+  row.className = 'kf-row';
+  row.innerHTML = killer && killer !== victim
+    ? `<span style="color:${killer.dark}">${escapeHtml(killer.name)}</span> ⚔️ <span style="color:${victim.dark}">${escapeHtml(victim.name)}</span>`
+    : `<span style="color:${victim.dark}">${escapeHtml(victim.name)}</span> 💥`;
+  kf.prepend(row);
+  while (kf.children.length > 5) kf.lastChild.remove();
+  setTimeout(() => {
+    row.classList.add('out');
+    setTimeout(() => row.remove(), 400);
+  }, 3500);
+}
+
 /* ---------------- game over ---------------- */
 function endGame(finalScore, rank, maxArea) {
   running = false;
+  music.stop();
 
   const d = store.data;
   d.games++;
@@ -939,6 +1217,12 @@ function endGame(finalScore, rank, maxArea) {
   d.xp += xpEarned;
   const after = levelFromXp(d.xp);
   store.save();
+
+  if (after.lvl > before.lvl) {
+    const unlocked = SKIN_UNLOCK_LEVELS.filter(l => l > before.lvl && l <= after.lvl).length;
+    if (unlocked) toast(`🎉 Level ${after.lvl} — ${unlocked} new skin${unlocked > 1 ? 's' : ''} unlocked!`);
+  }
+  buildSkinRows();                // refresh locks for the menu
 
   $('go-name').textContent = human.name;
   $('go-avatar').style.background = human.color;
@@ -999,11 +1283,14 @@ $('btn-resume').addEventListener('click', () => {
 $('btn-sound').addEventListener('click', function () {
   store.data.sound = !store.data.sound; store.save();
   this.textContent = 'Sound: ' + (store.data.sound ? 'On' : 'Off');
+  if (!store.data.sound) music.stop();
+  else if (running) music.start();
   audio.click();
 });
 $('btn-quit').addEventListener('click', () => {
   audio.click();
   running = false;
+  music.stop();
   $('game-settings-panel').classList.add('hidden');
   $('game').classList.add('hidden');
   $('menu').classList.remove('hidden');
