@@ -320,7 +320,7 @@ const canOnline = typeof location !== 'undefined'
   && typeof WebSocket !== 'undefined';
 
 function configuredWsUrl() {
-  const fromWindow = String(window.ARENA_WS_URL || '').trim();
+  const fromWindow = String(window.IHATA_WS_URL || '').trim();
   const fromQuery = new URLSearchParams(location.search).get('server');
   const raw = String(fromQuery || fromWindow || '').trim();
   if (!raw) return '';
