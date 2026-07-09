@@ -40,20 +40,23 @@
       </button>
 
       <div id="priv-panel" class="priv-panel hidden">
-        <div class="room-grid">
+        <div class="room-tabs">
+          <button id="tab-create" class="room-tab active">➕ Create Room</button>
+          <button id="tab-join" class="room-tab">🚪 Join Room</button>
+        </div>
+        <div class="room-grid" id="room-grid">
           <input id="room-input" type="text" maxlength="24" placeholder="Room Name" autocomplete="off" spellcheck="false">
           <button id="btn-room-dice" class="dice-btn" title="Random room name" aria-label="Random room name">🎲</button>
         </div>
         <input id="room-pass-input" type="password" maxlength="48" placeholder="Password (optional)" autocomplete="off">
-        <div class="room-opts">
+        <div class="room-opts" id="room-opts">
           <label class="room-opt">Max Players
             <select id="room-max">
               <option value="2">2</option>
               <option value="4">4</option>
               <option value="6">6</option>
               <option value="8">8</option>
-              <option value="12">12</option>
-              <option value="16" selected>16</option>
+              <option value="10" selected>10</option>
             </select>
           </label>
           <label class="room-opt check">
@@ -61,11 +64,14 @@
             <span>Fill with Bots</span>
           </label>
         </div>
-        <div class="room-btns">
-          <button id="btn-room-play" class="btn-primary slim"><span>JOIN / CREATE</span></button>
+        <div class="room-btns single" id="room-btns-create">
+          <button id="btn-room-create" class="btn-primary slim"><span>CREATE ROOM</span></button>
+        </div>
+        <div class="room-btns hidden" id="room-btns-join">
+          <button id="btn-room-join" class="btn-primary slim"><span>JOIN ROOM</span></button>
           <button id="btn-room-browse" class="btn-secondary slim"><span>BROWSE ROOMS</span></button>
         </div>
-        <p class="room-hint">Same room name + password = same match. The first player creates the room and sets its rules.</p>
+        <p class="room-hint" id="room-hint">You set the rules: up to 10 players, bots on or off. Share the room name and password with friends.</p>
       </div>
     </div>
 

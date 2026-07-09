@@ -82,7 +82,7 @@ const store = {
     try { this.data = JSON.parse(localStorage.getItem('arenaio') || '{}'); }
     catch (e) { this.data = {}; }
     this.data = Object.assign({
-      name: '', room: '', roomPass: '', roomMax: 16, roomBots: true,
+      name: '', room: '', roomPass: '', roomMax: 10, roomBots: true,
       skin: 0, sound: true, mapSize: 1,
       xp: 0, streak: 0, games: 0, bestScore: 0, bestRank: 0, kills: 0, bestArea: 0
     }, this.data);
@@ -226,14 +226,31 @@ const urlRoom = (params.get('room') || '').slice(0, 24);
 const urlPass = (params.get('pass') || '').slice(0, 48);
 $('room-input').value = urlRoom || store.data.room || '';
 $('room-pass-input').value = urlRoom ? urlPass : (store.data.roomPass || '');
-$('room-max').value = String(store.data.roomMax || 16);
+$('room-max').value = String(Math.min(store.data.roomMax || 10, 10));
 $('room-bots').checked = store.data.roomBots !== false;
 
 /* private room panel */
+let roomMode = 'create';           // 'create' | 'join'
 function setPrivPanel(open) {
   $('priv-panel').classList.toggle('hidden', !open);
   $('btn-priv-toggle').classList.toggle('open', open);
 }
+function setRoomMode(mode) {
+  roomMode = mode;
+  const create = mode === 'create';
+  $('tab-create').classList.toggle('active', create);
+  $('tab-join').classList.toggle('active', !create);
+  $('room-opts').classList.toggle('hidden', !create);
+  $('btn-room-dice').classList.toggle('hidden', !create);
+  $('room-grid').classList.toggle('nodice', !create);
+  $('room-btns-create').classList.toggle('hidden', !create);
+  $('room-btns-join').classList.toggle('hidden', create);
+  $('room-hint').textContent = create
+    ? 'You set the rules: up to 10 players, bots on or off. Share the room name and password with friends.'
+    : 'Enter the exact room name (and its password if it has one), or pick a room from Browse Rooms.';
+}
+$('tab-create').addEventListener('click', () => { audio.click(); setRoomMode('create'); });
+$('tab-join').addEventListener('click', () => { audio.click(); setRoomMode('join'); });
 $('btn-priv-toggle').addEventListener('click', () => {
   audio.click();
   const opening = $('priv-panel').classList.contains('hidden');
@@ -242,7 +259,8 @@ $('btn-priv-toggle').addEventListener('click', () => {
 });
 if (urlRoom) {
   setPrivPanel(true);   // arrived via an invite link
-  toast(`🔗 Invite to room "${urlRoom}" — press JOIN / CREATE`);
+  setRoomMode('join');
+  toast(`🔗 Invite to room "${urlRoom}" — press JOIN ROOM`);
 }
 
 const ROOM_ADJ = ['turbo', 'neon', 'mega', 'hyper', 'royal', 'crazy', 'pixel', 'shadow', 'golden', 'cosmic'];
@@ -430,13 +448,13 @@ function startRoomGame() {             // private room from the panel
     return;
   }
   const pass = $('room-pass-input').value.slice(0, 48);
-  launchGame(room, pass, {
-    max: parseInt($('room-max').value, 10) || 16,
-    bots: $('room-bots').checked
-  });
+  const opts = roomMode === 'create'
+    ? { max: parseInt($('room-max').value, 10) || 10, bots: $('room-bots').checked }
+    : null;
+  launchGame(room, pass, opts, roomMode);
 }
 
-function launchGame(room, roomPass, opts) {
+function launchGame(room, roomPass, opts, mode) {
   const name = ($('name-input').value.trim() || 'Player One').slice(0, 14);
   store.data.name = name;
   if (room !== 'public') {
@@ -449,7 +467,7 @@ function launchGame(room, roomPass, opts) {
   }
   store.save();
   if (canOnline) {
-    connectOnline(name, room, roomPass, opts);
+    connectOnline(name, room, roomPass, opts, mode);
   } else {
     if (room !== 'public') toast('Rooms need the online server — playing offline vs bots');
     startOffline(name);
@@ -515,11 +533,13 @@ function startOffline(name) {
 }
 
 /* ---------------- online client ---------------- */
-function connectOnline(name, room, roomPass, opts) {
+function connectOnline(name, room, roomPass, opts, mode) {
   const color = ALL_SKINS[store.data.skin] || SKINS[0];
-  const isPriv = room !== 'public';
-  const btnLabel = (isPriv ? $('btn-room-play') : $('btn-play')).querySelector('span');
-  const idleLabel = isPriv ? 'JOIN / CREATE' : 'PLAY';
+  const btn = mode === 'create' ? $('btn-room-create')
+    : mode === 'join' ? $('btn-room-join')
+    : $('btn-play');
+  const btnLabel = btn.querySelector('span');
+  const idleLabel = mode === 'create' ? 'CREATE ROOM' : mode === 'join' ? 'JOIN ROOM' : 'PLAY';
   btnLabel.textContent = 'CONNECTING...';
   const reset = () => { btnLabel.textContent = idleLabel; };
 
@@ -550,7 +570,8 @@ function connectOnline(name, room, roomPass, opts) {
 
   sock.onopen = () => sock.send(JSON.stringify({
     t: 'join', n: name, c: color, r: room, pw: roomPass,
-    mx: opts ? opts.max : 0, b: opts ? (opts.bots ? 1 : 0) : 1
+    mx: opts ? opts.max : 0, b: opts ? (opts.bots ? 1 : 0) : 1,
+    md: mode === 'create' ? 'c' : mode === 'join' ? 'j' : ''
   }));
   sock.onerror = () => {};
   sock.onclose = () => {
@@ -581,6 +602,8 @@ function connectOnline(name, room, roomPass, opts) {
       rejected(
         m.code === 'bad_password' ? '🔒 Wrong password for this room'
         : m.code === 'room_full' ? 'Room is full — try another one'
+        : m.code === 'room_exists' ? 'That room name is taken — pick another or use Join Room'
+        : m.code === 'no_room' ? 'Room not found — check the name or create it'
         : 'Could not join room');
     } else if (online && ws === sock) {
       handleNet(m);
@@ -1672,7 +1695,8 @@ window.addEventListener('keyup', e => {
 });
 
 $('btn-play').addEventListener('click', startGame);
-$('btn-room-play').addEventListener('click', startRoomGame);
+$('btn-room-create').addEventListener('click', startRoomGame);
+$('btn-room-join').addEventListener('click', startRoomGame);
 $('btn-room-browse').addEventListener('click', openRoomBrowser);
 
 /* ---------------- invite links ---------------- */
@@ -1759,6 +1783,7 @@ function renderRoomList(list) {
       $('modal-backdrop').classList.add('hidden');
       if (r.id === 'public') { startGame(); return; }
       setPrivPanel(true);
+      setRoomMode('join');
       $('room-input').value = r.l;
       $('room-pass-input').value = '';
       if (r.lk) {

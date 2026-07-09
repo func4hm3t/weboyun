@@ -23,6 +23,7 @@ const BOOST_REGEN = 13;
 const TICK_MS = 50;                // 20 Hz simulation + broadcast
 const TOTAL_TARGET = 7;            // bots fill up to this many players
 const MAX_HUMANS = 16;
+const PRIV_MAX_HUMANS = 10;        // private rooms cap out at 10 players
 const ROOM_TTL_MS = 5 * 60 * 1000; // empty private rooms are deleted after this
 const ROOM_SWEEP_MS = 30 * 1000;
 
@@ -93,7 +94,9 @@ function makeRoom(id, label, password, opts) {
   return {
     id, label,
     password: String(password || ''),
-    maxHumans: clamp(parseInt(o.max, 10) || MAX_HUMANS, 2, MAX_HUMANS),
+    maxHumans: id === 'public'
+      ? MAX_HUMANS
+      : clamp(parseInt(o.max, 10) || PRIV_MAX_HUMANS, 2, PRIV_MAX_HUMANS),
     botsOn: !(o.bots === 0 || o.bots === false),
     emptySince: Date.now(),
     owner: new Int16Array(GRID * GRID).fill(-1),
@@ -135,15 +138,17 @@ function saveRoom(room) {
   room.personaCursor = personaCursor;
 }
 
-function getOrCreateRoom(rawId, rawPassword, opts) {
+function getOrCreateRoom(rawId, rawPassword, opts, mode) {
   const id = cleanRoomId(rawId);
   const password = String(rawPassword || '').slice(0, 48);
   let room = rooms.get(id);
   if (room) {
+    if (mode === 'create' && id !== 'public') return { error: 'room_exists' };
     if (room.password && room.password !== password) return { error: 'bad_password' };
     if (!room.password && password) return { error: 'bad_password' };
     return { room };
   }
+  if (mode === 'join') return { error: 'no_room' };
   room = makeRoom(id, roomTitle(rawId), password, opts);
   rooms.set(id, room);
   useRoom(room);
@@ -705,7 +710,8 @@ wss.on('connection', sock => {
     }
 
     if (m.t === 'join' && !me) {
-      const result = getOrCreateRoom(m.r, m.pw, { max: m.mx, bots: m.b });
+      const result = getOrCreateRoom(m.r, m.pw, { max: m.mx, bots: m.b },
+        m.md === 'c' ? 'create' : m.md === 'j' ? 'join' : '');
       if (result.error) {
         send(sock, { t: 'err', code: result.error });
         sock.close();

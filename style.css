@@ -122,6 +122,21 @@ body{
   display:flex;flex-direction:column;gap:12px;
   border-top:1px solid #e7ecf5;padding-top:16px;
 }
+.room-tabs{
+  display:grid;grid-template-columns:1fr 1fr;gap:6px;
+  background:#eef1f6;border-radius:12px;padding:5px;
+}
+.room-tab{
+  height:40px;border:none;border-radius:9px;background:transparent;
+  font-family:inherit;font-size:15px;font-weight:700;color:var(--muted);
+  cursor:pointer;transition:background .15s,color .15s,box-shadow .15s;
+}
+.room-tab.active{
+  background:#fff;color:var(--blue);
+  box-shadow:0 2px 8px rgba(30,64,175,.14);
+}
+.room-grid.nodice{grid-template-columns:1fr}
+.room-btns.single{grid-template-columns:1fr}
 .dice-btn{
   border:none;border-radius:12px;background:#eef1f6;font-size:22px;cursor:pointer;
   transition:background .15s,transform .1s;

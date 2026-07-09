@@ -24,8 +24,8 @@ https://your-user.github.io/your-repo/?server=wss://your-ihata-server.example.co
 
 Open the **Private Room** panel on the start screen.
 
-- Same room name + same password = same match. A different room name creates a separate arena.
-- The first player creates the room and sets its rules: **max players** (2–16) and whether bots fill empty slots.
+- **Create Room** makes a new room (the name must be free); **Join Room** enters an existing one.
+- The creator sets the rules: **max players** (2–10) and whether bots fill empty slots.
 - **Browse Rooms** lists all live rooms with player counts; locked rooms show a 🔒 icon.
 - In a room, tap the 🔗 button on the in-game badge to copy an invite link (it includes the room name and password).
 - Empty private rooms are deleted automatically after 5 minutes.
