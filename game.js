@@ -251,6 +251,12 @@ function setRoomMode(mode) {
 }
 $('tab-create').addEventListener('click', () => { audio.click(); setRoomMode('create'); });
 $('tab-join').addEventListener('click', () => { audio.click(); setRoomMode('join'); });
+
+/* the panel is a dropdown: clicking anywhere else closes it */
+document.addEventListener('pointerdown', e => {
+  if ($('priv-panel').classList.contains('hidden')) return;
+  if (!e.target.closest('.play-card') && !e.target.closest('#modal-backdrop')) setPrivPanel(false);
+});
 $('btn-priv-toggle').addEventListener('click', () => {
   audio.click();
   const opening = $('priv-panel').classList.contains('hidden');
@@ -1675,6 +1681,8 @@ window.addEventListener('keydown', e => {
       const el = document.activeElement;
       if (el === $('name-input')) startGame();
       else if (el === $('room-input') || el === $('room-pass-input')) startRoomGame();
+    } else if (e.code === 'Escape') {
+      setPrivPanel(false);
     }
     return;
   }
