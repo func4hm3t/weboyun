@@ -338,6 +338,123 @@ function toast(msg) {
   t._tm = setTimeout(() => t.classList.add('hidden'), 2200);
 }
 
+/* ---------------- menu background: wandering trail snakes ---------------- */
+const menuBg = {
+  canvas: $('menu-bg'), ctx: null, snakes: [], raf: 0, last: 0, on: false,
+  CELL: 26,
+  COLORS: ['#2563eb', '#f97316', '#10b981', '#ec4899', '#8b5cf6', '#f59e0b', '#14b8a6', '#ef4444'],
+  reduce: matchMedia('(prefers-reduced-motion: reduce)').matches,
+
+  resize() {
+    this.canvas.width = innerWidth * devicePixelRatio;
+    this.canvas.height = innerHeight * devicePixelRatio;
+    this.ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+    this.cols = Math.ceil(innerWidth / this.CELL);
+    this.rows = Math.ceil(innerHeight / this.CELL);
+  },
+
+  makeSnake(color) {
+    const dir = pick(DIRS);
+    const x = randInt(3, this.cols - 4), y = randInt(3, this.rows - 4);
+    return {
+      color, dir, x, y, tx: x + dir.x, ty: y + dir.y,
+      speed: 3.2 + Math.random() * 3.4,          // cells per second
+      trail: [], maxTrail: randInt(9, 17), turnIn: randInt(4, 12)
+    };
+  },
+
+  start() {
+    if (this.on || this.reduce) return;
+    if (!this.ctx) this.ctx = this.canvas.getContext('2d');
+    this.resize();
+    const want = clamp(Math.round(innerWidth * innerHeight / 160000), 5, 9);
+    this.snakes = [];
+    for (let i = 0; i < want; i++) this.makeSnakeSpread(i, want);
+    this.on = true;
+    this.last = performance.now();
+    this.raf = requestAnimationFrame(t => this.frame(t));
+  },
+  makeSnakeSpread(i, n) {
+    const s = this.makeSnake(this.COLORS[i % this.COLORS.length]);
+    s.x = s.tx = Math.round((i + 0.5) / n * this.cols); // spread across the screen
+    s.tx += s.dir.x;
+    this.snakes.push(s);
+  },
+
+  stop() {
+    this.on = false;
+    cancelAnimationFrame(this.raf);
+    if (this.ctx) this.ctx.clearRect(0, 0, innerWidth, innerHeight);
+  },
+
+  choose(s) {
+    // steer back inside near the edges, otherwise wander
+    if (s.x < 2 && s.dir.x !== 1) s.dir = DIRS[0];
+    else if (s.x > this.cols - 3 && s.dir.x !== -1) s.dir = DIRS[1];
+    else if (s.y < 2 && s.dir.y !== 1) s.dir = DIRS[2];
+    else if (s.y > this.rows - 3 && s.dir.y !== -1) s.dir = DIRS[3];
+    else if (--s.turnIn <= 0) {
+      s.turnIn = randInt(4, 12);
+      const sign = Math.random() < 0.5 ? 1 : -1;
+      s.dir = DIRS.find(d => d.x === -s.dir.y * sign && d.y === s.dir.x * sign) || s.dir;
+    }
+    s.tx = s.x + s.dir.x; s.ty = s.y + s.dir.y;
+  },
+
+  step(s, dt) {
+    let dist = s.speed * dt, guard = 0;
+    while (dist > 0 && guard++ < 6) {
+      const dx = s.tx - s.x, dy = s.ty - s.y;
+      const d = Math.abs(dx) + Math.abs(dy);
+      if (d <= dist) {
+        s.x = s.tx; s.y = s.ty;
+        dist -= d;
+        s.trail.push({ x: s.x, y: s.y });
+        if (s.trail.length > s.maxTrail) s.trail.shift();
+        this.choose(s);
+      } else {
+        s.x += Math.sign(dx) * dist;
+        s.y += Math.sign(dy) * dist;
+        dist = 0;
+      }
+    }
+  },
+
+  frame(t) {
+    if (!this.on) return;
+    const dt = Math.min(0.05, (t - this.last) / 1000);
+    this.last = t;
+    const c = this.ctx, CELL = this.CELL;
+    c.clearRect(0, 0, innerWidth, innerHeight);
+    for (const s of this.snakes) {
+      this.step(s, dt);
+      for (let i = 0; i < s.trail.length; i++) {
+        c.globalAlpha = (i + 1) / s.trail.length * 0.22;
+        c.fillStyle = s.color;
+        roundRect(c, s.trail[i].x * CELL + 2, s.trail[i].y * CELL + 2, CELL - 4, CELL - 4, 6);
+        c.fill();
+      }
+      // head with little eyes, like the in-game snakes
+      c.globalAlpha = 0.6;
+      c.fillStyle = s.color;
+      roundRect(c, s.x * CELL + 1, s.y * CELL + 1, CELL - 2, CELL - 2, 7);
+      c.fill();
+      c.globalAlpha = 0.9;
+      c.fillStyle = '#fff';
+      const ex = s.dir.y !== 0 ? 5 : 0, ey = s.dir.x !== 0 ? 5 : 0;
+      const hx = s.x * CELL + CELL / 2 + s.dir.x * 4, hy = s.y * CELL + CELL / 2 + s.dir.y * 4;
+      c.beginPath();
+      c.arc(hx - ex, hy - ey, 2.4, 0, Math.PI * 2);
+      c.arc(hx + ex, hy + ey, 2.4, 0, Math.PI * 2);
+      c.fill();
+    }
+    c.globalAlpha = 1;
+    this.raf = requestAnimationFrame(tt => this.frame(tt));
+  }
+};
+window.addEventListener('resize', () => { if (menuBg.on) menuBg.resize(); });
+menuBg.start();
+
 /* =====================================================================
    GAME STATE
    ===================================================================== */
@@ -411,15 +528,28 @@ function makePlayer(id, name, color, isHuman) {
 }
 
 function findSpawn() {
-  for (let attempt = 0; attempt < 200; attempt++) {
+  // prefer unclaimed ground far from everyone; never fall back to a blind
+  // random spot (that could be the middle of someone's territory)
+  let best = null, bestScore = -Infinity;
+  for (let attempt = 0; attempt < 220; attempt++) {
     const cx = randInt(4, GRID - 5), cy = randInt(4, GRID - 5);
-    let free = true;
-    for (let y = cy - 3; y <= cy + 3 && free; y++)
-      for (let x = cx - 3; x <= cx + 3; x++)
-        if (owner[y * GRID + x] !== -1 || trailMap[y * GRID + x] !== -1) { free = false; break; }
-    if (free) return { cx, cy };
+    let taken = 0;
+    for (let y = cy - 3; y <= cy + 3; y++)
+      for (let x = cx - 3; x <= cx + 3; x++) {
+        const i = y * GRID + x;
+        if (owner[i] !== -1 || trailMap[i] !== -1) taken++;
+      }
+    let nearest = Infinity;
+    for (const q of players) {
+      if (!q.alive) continue;
+      const d = Math.abs(q.cx - cx) + Math.abs(q.cy - cy);
+      if (d < nearest) nearest = d;
+    }
+    if (taken === 0 && nearest > 14) return { cx, cy };   // perfect spot
+    const sc = -taken * 10 + Math.min(nearest, 30);
+    if (sc > bestScore) { bestScore = sc; best = { cx, cy }; }
   }
-  return { cx: randInt(4, GRID - 5), cy: randInt(4, GRID - 5) };
+  return best;
 }
 
 function spawn(p) {
@@ -493,6 +623,7 @@ function enterGameScreen() {
   $('gameover').classList.add('hidden');
   $('game').classList.remove('hidden');
   $('game-settings-panel').classList.add('hidden');
+  menuBg.stop();
   applyMapSize();
   resize();
 
@@ -590,6 +721,7 @@ function connectOnline(name, room, roomPass, opts, mode) {
         $('game').classList.add('hidden');
         $('gameover').classList.add('hidden');
         $('menu').classList.remove('hidden');
+        menuBg.start();
         toast('Connection lost');
       }
     }
@@ -1598,6 +1730,7 @@ function leaveGame() {
   $('gameover').classList.add('hidden');
   $('game').classList.add('hidden');
   $('menu').classList.remove('hidden');
+  menuBg.start();
   buildSkinRows();
 }
 

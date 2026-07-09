@@ -177,15 +177,28 @@ function makePlayer(name, color, bot, sock) {
 }
 
 function findSpawn() {
-  for (let attempt = 0; attempt < 200; attempt++) {
+  // prefer unclaimed ground far from everyone; never fall back to a blind
+  // random spot (that could be the middle of someone's territory)
+  let best = null, bestScore = -Infinity;
+  for (let attempt = 0; attempt < 220; attempt++) {
     const cx = randInt(4, GRID - 5), cy = randInt(4, GRID - 5);
-    let free = true;
-    for (let y = cy - 3; y <= cy + 3 && free; y++)
-      for (let x = cx - 3; x <= cx + 3; x++)
-        if (owner[y * GRID + x] !== -1 || trailMap[y * GRID + x] !== -1) { free = false; break; }
-    if (free) return { cx, cy };
+    let taken = 0;
+    for (let y = cy - 3; y <= cy + 3; y++)
+      for (let x = cx - 3; x <= cx + 3; x++) {
+        const i = y * GRID + x;
+        if (owner[i] !== -1 || trailMap[i] !== -1) taken++;
+      }
+    let nearest = Infinity;
+    for (const q of players.values()) {
+      if (!q.alive) continue;
+      const d = Math.abs(q.cx - cx) + Math.abs(q.cy - cy);
+      if (d < nearest) nearest = d;
+    }
+    if (taken === 0 && nearest > 14) return { cx, cy };   // perfect spot
+    const sc = -taken * 10 + Math.min(nearest, 30);
+    if (sc > bestScore) { bestScore = sc; best = { cx, cy }; }
   }
-  return { cx: randInt(4, GRID - 5), cy: randInt(4, GRID - 5) };
+  return best;
 }
 
 function spawn(p) {
