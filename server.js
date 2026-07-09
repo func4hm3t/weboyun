@@ -1,5 +1,5 @@
 /* =====================================================================
-   ARENA.IO server — authoritative real-time simulation over WebSocket,
+   İHATA server — authoritative real-time simulation over WebSocket,
    plus a static file server for the client.
    Run: npm install && node server.js
    ===================================================================== */
@@ -716,5 +716,5 @@ wss.on('connection', sock => {
 getOrCreateRoom('public', '');   // arena starts alive with bots
 
 httpServer.listen(PORT, '0.0.0.0', () => {
-  console.log(`ARENA.IO live server → http://localhost:${PORT}`);
+  console.log(`İHATA live server → http://localhost:${PORT}`);
 });

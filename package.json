@@ -1,7 +1,7 @@
 {
-  "name": "arena-io",
+  "name": "ihata",
   "version": "1.0.0",
-  "description": "ARENA.IO — paper.io style territory conquest game with real-time multiplayer",
+  "description": "İHATA — paper.io style territory conquest game with real-time multiplayer",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

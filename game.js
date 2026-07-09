@@ -1,5 +1,5 @@
 /* =====================================================================
-   ARENA.IO — a paper.io style territory conquest game
+   İHATA — a paper.io style territory conquest game
    Pure JS + Canvas, no dependencies.
    ===================================================================== */
 'use strict';
@@ -1501,12 +1501,12 @@ $('btn-back-menu').addEventListener('click', () => { audio.click(); leaveGame();
 
 function resultText() {
   const r = human._lastResult || { score: 0, rank: 0, area: 0 };
-  return `I scored ${r.score.toLocaleString()} points and claimed ${r.area.toFixed(0)}% of the arena (rank #${r.rank}) in ARENA.IO! Can you beat me?`;
+  return `I scored ${r.score.toLocaleString()} points and claimed ${r.area.toFixed(0)}% of the arena (rank #${r.rank}) in İHATA! Can you beat me?`;
 }
 $('btn-share').addEventListener('click', async () => {
   audio.click();
   if (navigator.share) {
-    try { await navigator.share({ title: 'ARENA.IO', text: resultText() }); } catch (e) {}
+    try { await navigator.share({ title: 'İHATA', text: resultText() }); } catch (e) {}
   } else {
     copyResult();
   }
