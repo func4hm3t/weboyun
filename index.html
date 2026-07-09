@@ -30,6 +30,10 @@
 
     <div class="play-card">
       <input id="name-input" type="text" maxlength="14" placeholder="Enter Name" autocomplete="off" spellcheck="false">
+      <div class="room-grid">
+        <input id="room-input" type="text" maxlength="24" placeholder="Room Name" autocomplete="off" spellcheck="false">
+        <input id="room-pass-input" type="password" maxlength="48" placeholder="Password">
+      </div>
       <button id="btn-play" class="btn-primary">
         <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M8 5v14l11-7z"/></svg>
         <span>PLAY</span>
@@ -169,6 +173,11 @@
 
 <div id="toast" class="toast hidden"></div>
 
+<script>
+  // GitHub Pages cannot run server.js. Put your hosted WebSocket URL here:
+  // window.ARENA_WS_URL = 'wss://your-arena-server.example.com';
+  window.ARENA_WS_URL = '';
+</script>
 <script src="game.js"></script>
 </body>
 </html>

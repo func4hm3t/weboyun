@@ -82,7 +82,7 @@ const store = {
     try { this.data = JSON.parse(localStorage.getItem('arenaio') || '{}'); }
     catch (e) { this.data = {}; }
     this.data = Object.assign({
-      name: '', skin: 0, sound: true, mapSize: 1,
+      name: '', room: 'public', roomPass: '', skin: 0, sound: true, mapSize: 1,
       xp: 0, streak: 0, games: 0, bestScore: 0, bestRank: 0, kills: 0, bestArea: 0
     }, this.data);
   },
@@ -218,7 +218,10 @@ function buildSkinRows() {
 }
 buildSkinRows();
 
+const params = new URLSearchParams(location.search);
 $('name-input').value = store.data.name || '';
+$('room-input').value = params.get('room') || store.data.room || 'public';
+$('room-pass-input').value = store.data.roomPass || '';
 
 $('btn-view-all').addEventListener('click', () => {
   const extra = $('skin-row-extra');
@@ -316,6 +319,14 @@ const canOnline = typeof location !== 'undefined'
   && /^https?:$/.test(location.protocol)
   && typeof WebSocket !== 'undefined';
 
+function configuredWsUrl() {
+  const fromWindow = String(window.ARENA_WS_URL || '').trim();
+  const fromQuery = new URLSearchParams(location.search).get('server');
+  const raw = String(fromQuery || fromWindow || '').trim();
+  if (!raw) return '';
+  return raw.replace(/^http:\/\//i, 'ws://').replace(/^https:\/\//i, 'wss://').replace(/\/+$/, '');
+}
+
 function allPlayers() { return online ? Array.from(playersById.values()) : players; }
 function getP(id) { return online ? playersById.get(id) : players[id]; }
 function hasTrail(p) { return online ? !!p.h : p.trail.length > 0; }
@@ -379,8 +390,13 @@ function spawn(p) {
 
 function startGame() {
   const name = ($('name-input').value.trim() || 'Player One').slice(0, 14);
-  store.data.name = name; store.save();
-  if (canOnline) connectOnline(name);
+  const room = ($('room-input').value.trim() || 'public').slice(0, 24);
+  const roomPass = $('room-pass-input').value.slice(0, 48);
+  store.data.name = name;
+  store.data.room = room;
+  store.data.roomPass = roomPass;
+  store.save();
+  if (canOnline) connectOnline(name, room, roomPass);
   else startOffline(name);
 }
 
@@ -441,7 +457,7 @@ function startOffline(name) {
 }
 
 /* ---------------- online client ---------------- */
-function connectOnline(name) {
+function connectOnline(name, room, roomPass) {
   const color = ALL_SKINS[store.data.skin] || SKINS[0];
   const btnLabel = $('btn-play').querySelector('span');
   btnLabel.textContent = 'CONNECTING...';
@@ -449,22 +465,27 @@ function connectOnline(name) {
 
   let settled = false;
   let sock;
-  const fallback = () => {
+  const fallback = (message) => {
     if (settled) return;
     settled = true;
     reset();
     try { sock && sock.close(); } catch (e) {}
+    if (message) {
+      toast(message);
+      startOffline(name);
+      return;
+    }
     toast('Server not found — playing offline vs bots');
     startOffline(name);
   };
   try {
-    const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
+    const url = configuredWsUrl() || ((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
     sock = new WebSocket(url);
   } catch (e) { fallback(); return; }
 
   const timer = setTimeout(fallback, 2000);
 
-  sock.onopen = () => sock.send(JSON.stringify({ t: 'join', n: name, c: color }));
+  sock.onopen = () => sock.send(JSON.stringify({ t: 'join', n: name, c: color, r: room, pw: roomPass }));
   sock.onerror = () => {};
   sock.onclose = () => {
     if (!settled) { clearTimeout(timer); fallback(); return; }
@@ -489,6 +510,9 @@ function connectOnline(name) {
       reset();
       ws = sock; online = true;
       initOnline(m);
+    } else if (m.t === 'err') {
+      clearTimeout(timer);
+      fallback(m.code === 'bad_password' ? 'Wrong room password' : 'Could not join room');
     } else if (online && ws === sock) {
       handleNet(m);
     }

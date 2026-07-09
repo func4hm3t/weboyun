@@ -64,17 +64,85 @@ const sameDir = (a, b) => a.x === b.x && a.y === b.y;
 const normDir = d => DIRS.find(k => sameDir(k, d));
 const rotate = (d, sign) => sign === 1 ? { x: -d.y, y: d.x } : { x: d.y, y: -d.x };
 
-/* ---------------- world state ---------------- */
-const owner = new Int16Array(GRID * GRID).fill(-1);
-const trailMap = new Int16Array(GRID * GRID).fill(-1);
+/* ---------------- room state ---------------- */
+let owner = new Int16Array(GRID * GRID).fill(-1);
+let trailMap = new Int16Array(GRID * GRID).fill(-1);
 let ownerDelta = [];               // flat [idx, val, idx, val...]
 let trailDelta = [];
-const players = new Map();         // id -> player
+let players = new Map();           // id -> player
 let nextId = 1;
 let powerups = [];                 // {id, cx, cy, type, born}
 let nextPuId = 1;
 let lastPuSpawn = 0;
 let personaCursor = 0;
+const rooms = new Map();
+
+function cleanRoomId(v) {
+  return String(v || 'public').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 24) || 'public';
+}
+
+function roomTitle(v) {
+  return String(v || 'public').trim().slice(0, 24) || 'public';
+}
+
+function makeRoom(id, label, password) {
+  return {
+    id, label,
+    password: String(password || ''),
+    owner: new Int16Array(GRID * GRID).fill(-1),
+    trailMap: new Int16Array(GRID * GRID).fill(-1),
+    ownerDelta: [], trailDelta: [],
+    players: new Map(),
+    nextId: 1,
+    powerups: [],
+    nextPuId: 1,
+    lastPuSpawn: 0,
+    personaCursor: 0
+  };
+}
+
+function useRoom(room) {
+  owner = room.owner;
+  trailMap = room.trailMap;
+  ownerDelta = room.ownerDelta;
+  trailDelta = room.trailDelta;
+  players = room.players;
+  nextId = room.nextId;
+  powerups = room.powerups;
+  nextPuId = room.nextPuId;
+  lastPuSpawn = room.lastPuSpawn;
+  personaCursor = room.personaCursor;
+}
+
+function saveRoom(room) {
+  room.owner = owner;
+  room.trailMap = trailMap;
+  room.ownerDelta = ownerDelta;
+  room.trailDelta = trailDelta;
+  room.players = players;
+  room.nextId = nextId;
+  room.powerups = powerups;
+  room.nextPuId = nextPuId;
+  room.lastPuSpawn = lastPuSpawn;
+  room.personaCursor = personaCursor;
+}
+
+function getOrCreateRoom(rawId, rawPassword) {
+  const id = cleanRoomId(rawId);
+  const password = String(rawPassword || '').slice(0, 48);
+  let room = rooms.get(id);
+  if (room) {
+    if (room.password && room.password !== password) return { error: 'bad_password' };
+    if (!room.password && password) return { error: 'bad_password' };
+    return { room };
+  }
+  room = makeRoom(id, roomTitle(rawId), password);
+  rooms.set(id, room);
+  useRoom(room);
+  ensureBots();
+  saveRoom(room);
+  return { room };
+}
 
 function setOwner(i, v) { if (owner[i] !== v) { owner[i] = v; ownerDelta.push(i, v); } }
 function setTrail(i, v) { if (trailMap[i] !== v) { trailMap[i] = v; trailDelta.push(i, v); } }
@@ -494,6 +562,8 @@ function broadcastExcept(exclude, obj) {
 
 /* ---------------- tick loop ---------------- */
 setInterval(() => {
+  for (const room of rooms.values()) {
+  useRoom(room);
   const dt = TICK_MS / 1000;
   const now = Date.now();
 
@@ -549,6 +619,8 @@ setInterval(() => {
     state.e = Math.round(p.energy);
     p.ws.send(JSON.stringify(state));
   }
+  saveRoom(room);
+  }
 }, TICK_MS);
 
 /* ---------------- static file server ---------------- */
@@ -576,12 +648,21 @@ const wss = new WebSocketServer({ server: httpServer });
 
 wss.on('connection', sock => {
   let me = null;
+  let room = null;
 
   sock.on('message', raw => {
     let m;
     try { m = JSON.parse(raw); } catch (e) { return; }
 
     if (m.t === 'join' && !me) {
+      const result = getOrCreateRoom(m.r, m.pw);
+      if (result.error) {
+        send(sock, { t: 'err', code: result.error });
+        sock.close();
+        return;
+      }
+      room = result.room;
+      useRoom(room);
       if (humansCount() >= MAX_HUMANS) { sock.close(); return; }
       const name = String(m.n || 'Player').slice(0, 14) || 'Player';
       const color = /^#[0-9a-f]{6}$/i.test(m.c || '') ? m.c : '#2563eb';
@@ -592,15 +673,18 @@ wss.on('connection', sock => {
       countCells();
       send(sock, {
         t: 'init', id: me.id,
+        r: room.label,
         o: Array.from(owner), tr: Array.from(trailMap),
         p: [...players.values()].map(serialize),
         pu: powerups.map(u => ({ i: u.id, x: u.cx, y: u.cy, tp: u.type }))
       });
       broadcastExcept(me, { t: 'pj', p: serialize(me) });
-      console.log(`+ ${name} joined (${humansCount()} online)`);
+      saveRoom(room);
+      console.log(`+ ${name} joined room ${room.id} (${humansCount()} online)`);
       return;
     }
     if (!me) return;
+    useRoom(room);
 
     if (m.t === 'dir') {
       const d = DIRS[m.d];
@@ -613,20 +697,23 @@ wss.on('connection', sock => {
     } else if (m.t === 'respawn') {
       if (!me.alive) { spawn(me); me.kills = 0; me.bonus = 0; }
     }
+    saveRoom(room);
   });
 
   sock.on('close', () => {
     if (!me) return;
+    useRoom(room);
     const p = me; me = null;
     if (p.alive) kill(p, null);
     players.delete(p.id);
     broadcast({ t: 'pl', i: p.id });
     ensureBots();
-    console.log(`- ${p.name} left (${humansCount()} online)`);
+    saveRoom(room);
+    console.log(`- ${p.name} left room ${room.id} (${humansCount()} online)`);
   });
 });
 
-ensureBots();   // arena starts alive with bots
+getOrCreateRoom('public', '');   // arena starts alive with bots
 
 httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`ARENA.IO live server → http://localhost:${PORT}`);
