@@ -97,6 +97,7 @@ body{
 
 .play-card{
   position:relative;
+  z-index:10;                       /* dropdown must paint above the skin grid */
   background:rgba(255,255,255,.72);
   backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
   border:1px solid rgba(255,255,255,.85);
