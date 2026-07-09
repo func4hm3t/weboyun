@@ -30,14 +30,43 @@
 
     <div class="play-card">
       <input id="name-input" type="text" maxlength="14" placeholder="Enter Name" autocomplete="off" spellcheck="false">
-      <div class="room-grid">
-        <input id="room-input" type="text" maxlength="24" placeholder="Room Name" autocomplete="off" spellcheck="false">
-        <input id="room-pass-input" type="password" maxlength="48" placeholder="Password">
-      </div>
       <button id="btn-play" class="btn-primary">
         <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M8 5v14l11-7z"/></svg>
         <span>PLAY</span>
       </button>
+
+      <button id="btn-priv-toggle" class="priv-toggle">
+        <span>🔒 Private Room</span><span class="chev">▾</span>
+      </button>
+
+      <div id="priv-panel" class="priv-panel hidden">
+        <div class="room-grid">
+          <input id="room-input" type="text" maxlength="24" placeholder="Room Name" autocomplete="off" spellcheck="false">
+          <button id="btn-room-dice" class="dice-btn" title="Random room name" aria-label="Random room name">🎲</button>
+        </div>
+        <input id="room-pass-input" type="password" maxlength="48" placeholder="Password (optional)" autocomplete="off">
+        <div class="room-opts">
+          <label class="room-opt">Max Players
+            <select id="room-max">
+              <option value="2">2</option>
+              <option value="4">4</option>
+              <option value="6">6</option>
+              <option value="8">8</option>
+              <option value="12">12</option>
+              <option value="16" selected>16</option>
+            </select>
+          </label>
+          <label class="room-opt check">
+            <input type="checkbox" id="room-bots" checked>
+            <span>Fill with Bots</span>
+          </label>
+        </div>
+        <div class="room-btns">
+          <button id="btn-room-play" class="btn-primary slim"><span>JOIN / CREATE</span></button>
+          <button id="btn-room-browse" class="btn-secondary slim"><span>BROWSE ROOMS</span></button>
+        </div>
+        <p class="room-hint">Same room name + password = same match. The first player creates the room and sets its rules.</p>
+      </div>
     </div>
 
     <section class="skin-section">
@@ -62,6 +91,11 @@
 
   <div id="killfeed"></div>
   <div id="combo-banner" class="hidden"></div>
+
+  <div class="room-badge hidden" id="room-badge">
+    <span id="room-badge-name">room</span>
+    <button id="btn-invite" title="Copy invite link" aria-label="Copy invite link">🔗</button>
+  </div>
 
   <div class="hud-player-card" id="hud-player-card">
     <div class="hpc-name"><span class="hpc-swatch" id="hpc-swatch"></span><span id="hpc-name">Player</span></div>

@@ -82,9 +82,11 @@ const store = {
     try { this.data = JSON.parse(localStorage.getItem('arenaio') || '{}'); }
     catch (e) { this.data = {}; }
     this.data = Object.assign({
-      name: '', room: 'public', roomPass: '', skin: 0, sound: true, mapSize: 1,
+      name: '', room: '', roomPass: '', roomMax: 16, roomBots: true,
+      skin: 0, sound: true, mapSize: 1,
       xp: 0, streak: 0, games: 0, bestScore: 0, bestRank: 0, kills: 0, bestArea: 0
     }, this.data);
+    if (this.data.room === 'public') this.data.room = '';
   },
   save() { try { localStorage.setItem('arenaio', JSON.stringify(this.data)); } catch (e) {} }
 };
@@ -220,8 +222,35 @@ buildSkinRows();
 
 const params = new URLSearchParams(location.search);
 $('name-input').value = store.data.name || '';
-$('room-input').value = params.get('room') || store.data.room || 'public';
-$('room-pass-input').value = store.data.roomPass || '';
+const urlRoom = (params.get('room') || '').slice(0, 24);
+const urlPass = (params.get('pass') || '').slice(0, 48);
+$('room-input').value = urlRoom || store.data.room || '';
+$('room-pass-input').value = urlRoom ? urlPass : (store.data.roomPass || '');
+$('room-max').value = String(store.data.roomMax || 16);
+$('room-bots').checked = store.data.roomBots !== false;
+
+/* private room panel */
+function setPrivPanel(open) {
+  $('priv-panel').classList.toggle('hidden', !open);
+  $('btn-priv-toggle').classList.toggle('open', open);
+}
+$('btn-priv-toggle').addEventListener('click', () => {
+  audio.click();
+  const opening = $('priv-panel').classList.contains('hidden');
+  setPrivPanel(opening);
+  if (opening && !$('room-input').value) $('room-input').focus();
+});
+if (urlRoom) {
+  setPrivPanel(true);   // arrived via an invite link
+  toast(`🔗 Invite to room "${urlRoom}" — press JOIN / CREATE`);
+}
+
+const ROOM_ADJ = ['turbo', 'neon', 'mega', 'hyper', 'royal', 'crazy', 'pixel', 'shadow', 'golden', 'cosmic'];
+const ROOM_NOUN = ['duel', 'clash', 'league', 'battle', 'party', 'zone', 'derby', 'rumble', 'showdown', 'siege'];
+$('btn-room-dice').addEventListener('click', () => {
+  audio.click();
+  $('room-input').value = `${pick(ROOM_ADJ)}-${pick(ROOM_NOUN)}-${randInt(10, 99)}`;
+});
 
 $('btn-view-all').addEventListener('click', () => {
   const extra = $('skin-row-extra');
@@ -315,6 +344,7 @@ let timeScale = 1;                // slow motion on death
 /* ---- multiplayer state ---- */
 let online = false, ws = null, myId = -1;
 let playersById = new Map();
+let roomInfo = null;              // {id, l, lk, mx, b} for the joined room
 const canOnline = typeof location !== 'undefined'
   && /^https?:$/.test(location.protocol)
   && typeof WebSocket !== 'undefined';
@@ -388,16 +418,42 @@ function spawn(p) {
   mmDirty = true;
 }
 
-function startGame() {
+function startGame() {                 // quick play: public arena
+  launchGame('public', '', null);
+}
+
+function startRoomGame() {             // private room from the panel
+  const room = $('room-input').value.trim().slice(0, 24);
+  if (!room) {
+    toast('Enter a room name first');
+    $('room-input').focus();
+    return;
+  }
+  const pass = $('room-pass-input').value.slice(0, 48);
+  launchGame(room, pass, {
+    max: parseInt($('room-max').value, 10) || 16,
+    bots: $('room-bots').checked
+  });
+}
+
+function launchGame(room, roomPass, opts) {
   const name = ($('name-input').value.trim() || 'Player One').slice(0, 14);
-  const room = ($('room-input').value.trim() || 'public').slice(0, 24);
-  const roomPass = $('room-pass-input').value.slice(0, 48);
   store.data.name = name;
-  store.data.room = room;
-  store.data.roomPass = roomPass;
+  if (room !== 'public') {
+    store.data.room = room;
+    store.data.roomPass = roomPass;
+  }
+  if (opts) {
+    store.data.roomMax = opts.max;
+    store.data.roomBots = opts.bots;
+  }
   store.save();
-  if (canOnline) connectOnline(name, room, roomPass);
-  else startOffline(name);
+  if (canOnline) {
+    connectOnline(name, room, roomPass, opts);
+  } else {
+    if (room !== 'public') toast('Rooms need the online server — playing offline vs bots');
+    startOffline(name);
+  }
 }
 
 function enterGameScreen() {
@@ -430,6 +486,8 @@ function enterGameScreen() {
 
 function startOffline(name) {
   online = false; ws = null;
+  roomInfo = null;
+  $('room-badge').classList.add('hidden');
 
   owner = new Int16Array(GRID * GRID).fill(-1);
   trailMap = new Int16Array(GRID * GRID).fill(-1);
@@ -457,26 +515,31 @@ function startOffline(name) {
 }
 
 /* ---------------- online client ---------------- */
-function connectOnline(name, room, roomPass) {
+function connectOnline(name, room, roomPass, opts) {
   const color = ALL_SKINS[store.data.skin] || SKINS[0];
-  const btnLabel = $('btn-play').querySelector('span');
+  const isPriv = room !== 'public';
+  const btnLabel = (isPriv ? $('btn-room-play') : $('btn-play')).querySelector('span');
+  const idleLabel = isPriv ? 'JOIN / CREATE' : 'PLAY';
   btnLabel.textContent = 'CONNECTING...';
-  const reset = () => { btnLabel.textContent = 'PLAY'; };
+  const reset = () => { btnLabel.textContent = idleLabel; };
 
   let settled = false;
   let sock;
-  const fallback = (message) => {
+  const fallback = () => {           // server unreachable: offline vs bots
     if (settled) return;
     settled = true;
     reset();
     try { sock && sock.close(); } catch (e) {}
-    if (message) {
-      toast(message);
-      startOffline(name);
-      return;
-    }
     toast('Server not found — playing offline vs bots');
     startOffline(name);
+  };
+  const rejected = (message) => {    // server said no: stay in the menu
+    if (settled) return;
+    settled = true;
+    reset();
+    try { sock && sock.close(); } catch (e) {}
+    audio.deny();
+    toast(message);
   };
   try {
     const url = configuredWsUrl() || ((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
@@ -485,7 +548,10 @@ function connectOnline(name, room, roomPass) {
 
   const timer = setTimeout(fallback, 2000);
 
-  sock.onopen = () => sock.send(JSON.stringify({ t: 'join', n: name, c: color, r: room, pw: roomPass }));
+  sock.onopen = () => sock.send(JSON.stringify({
+    t: 'join', n: name, c: color, r: room, pw: roomPass,
+    mx: opts ? opts.max : 0, b: opts ? (opts.bots ? 1 : 0) : 1
+  }));
   sock.onerror = () => {};
   sock.onclose = () => {
     if (!settled) { clearTimeout(timer); fallback(); return; }
@@ -512,7 +578,10 @@ function connectOnline(name, room, roomPass) {
       initOnline(m);
     } else if (m.t === 'err') {
       clearTimeout(timer);
-      fallback(m.code === 'bad_password' ? 'Wrong room password' : 'Could not join room');
+      rejected(
+        m.code === 'bad_password' ? '🔒 Wrong password for this room'
+        : m.code === 'room_full' ? 'Room is full — try another one'
+        : 'Could not join room');
     } else if (online && ws === sock) {
       handleNet(m);
     }
@@ -546,9 +615,23 @@ function initOnline(m) {
   human.energy = 100;
   powerups = (m.pu || []).map(u => ({ id: u.i, cx: u.x, cy: u.y, type: u.tp }));
   deathHandled = false;
+  roomInfo = m.ri || { id: 'public', l: m.r || 'public', lk: 0, mx: 16, b: 1 };
   enterGameScreen();
+
+  const badge = $('room-badge');
+  if (roomInfo.id !== 'public') {
+    $('room-badge-name').textContent = `${roomInfo.lk ? '🔒' : '🏠'} ${roomInfo.l}`;
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+
   const humans = [...playersById.values()].filter(p => !p.bot).length;
-  toast(`🌐 Online arena — ${humans} player${humans > 1 ? 's' : ''} connected`);
+  if (roomInfo.id !== 'public') {
+    toast(`🏠 Room "${roomInfo.l}" — ${humans}/${roomInfo.mx} player${humans > 1 ? 's' : ''}. Tap 🔗 to invite friends!`);
+  } else {
+    toast(`🌐 Online arena — ${humans} player${humans > 1 ? 's' : ''} connected`);
+  }
 }
 
 function handleNet(m) {
@@ -1480,6 +1563,8 @@ function leaveGame() {
   music.stop();
   if (ws) { const s = ws; ws = null; online = false; try { s.close(); } catch (e) {} }
   online = false;
+  roomInfo = null;
+  $('room-badge').classList.add('hidden');
   $('game-settings-panel').classList.add('hidden');
   $('gameover').classList.add('hidden');
   $('game').classList.add('hidden');
@@ -1563,9 +1648,10 @@ function setBoost(on) {
 
 window.addEventListener('keydown', e => {
   if (!running) {
-    if (e.code === 'Enter' && !$('menu').classList.contains('hidden')
-        && document.activeElement === $('name-input')) {
-      startGame();
+    if (e.code === 'Enter' && !$('menu').classList.contains('hidden')) {
+      const el = document.activeElement;
+      if (el === $('name-input')) startGame();
+      else if (el === $('room-input') || el === $('room-pass-input')) startRoomGame();
     }
     return;
   }
@@ -1586,6 +1672,105 @@ window.addEventListener('keyup', e => {
 });
 
 $('btn-play').addEventListener('click', startGame);
+$('btn-room-play').addEventListener('click', startRoomGame);
+$('btn-room-browse').addEventListener('click', openRoomBrowser);
+
+/* ---------------- invite links ---------------- */
+function inviteLink() {
+  const u = new URL(location.origin + location.pathname);
+  if (roomInfo && roomInfo.id !== 'public') {
+    u.searchParams.set('room', roomInfo.l);
+    if (store.data.roomPass) u.searchParams.set('pass', store.data.roomPass);
+  }
+  const server = new URLSearchParams(location.search).get('server');
+  if (server) u.searchParams.set('server', server);
+  return u.toString();
+}
+$('btn-invite').addEventListener('click', () => {
+  audio.click();
+  const link = inviteLink();
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(link)
+      .then(() => toast('🔗 Invite link copied — send it to your friends!'))
+      .catch(() => toast(link));
+  } else {
+    toast(link);
+  }
+});
+
+/* ---------------- room browser ---------------- */
+function openRoomBrowser() {
+  audio.click();
+  openModal('Live Rooms',
+    '<div class="room-list" id="room-list"><div class="room-empty">Connecting…</div></div>' +
+    '<button class="room-refresh" id="room-refresh">↻ Refresh</button>');
+  $('room-refresh').addEventListener('click', () => {
+    audio.click();
+    const el = $('room-list');
+    if (el) el.innerHTML = '<div class="room-empty">Connecting…</div>';
+    fetchRooms();
+  });
+  fetchRooms();
+}
+
+function fetchRooms() {
+  const setEmpty = msg => {
+    const el = $('room-list');
+    if (el) el.innerHTML = `<div class="room-empty">${msg}</div>`;
+  };
+  if (!canOnline) { setEmpty('Rooms need the online server.'); return; }
+  let sock;
+  try {
+    const url = configuredWsUrl() || ((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
+    sock = new WebSocket(url);
+  } catch (e) { setEmpty('Server not reachable.'); return; }
+  const timer = setTimeout(() => {
+    try { sock.close(); } catch (e) {}
+    setEmpty('Server not reachable.');
+  }, 2500);
+  sock.onopen = () => sock.send(JSON.stringify({ t: 'rooms' }));
+  sock.onerror = () => {};
+  sock.onmessage = ev => {
+    let m;
+    try { m = JSON.parse(ev.data); } catch (e) { return; }
+    if (m.t !== 'rooms') return;
+    clearTimeout(timer);
+    try { sock.close(); } catch (e) {}
+    renderRoomList(m.list || []);
+  };
+}
+
+function renderRoomList(list) {
+  const el = $('room-list');
+  if (!el) return;                   // modal was closed meanwhile
+  if (!list.length) {
+    el.innerHTML = '<div class="room-empty">No live rooms — create the first one!</div>';
+    return;
+  }
+  el.innerHTML = '';
+  for (const r of list) {
+    const row = document.createElement('button');
+    row.className = 'room-row';
+    row.innerHTML =
+      `<span class="room-row-name">${r.id === 'public' ? '🌐' : r.lk ? '🔒' : '🏠'} ${escapeHtml(r.l)}</span>` +
+      `<span class="room-row-meta">${r.b ? '🤖 ' : ''}👥 ${r.h}/${r.mx}</span>`;
+    row.addEventListener('click', () => {
+      audio.click();
+      $('modal-backdrop').classList.add('hidden');
+      if (r.id === 'public') { startGame(); return; }
+      setPrivPanel(true);
+      $('room-input').value = r.l;
+      $('room-pass-input').value = '';
+      if (r.lk) {
+        $('room-pass-input').focus();
+        toast('🔒 This room is locked — enter its password');
+      } else {
+        startRoomGame();
+      }
+    });
+    el.appendChild(row);
+  }
+}
 
 /* touch: swipe to steer; a second finger held down = boost */
 let touchStart = null;

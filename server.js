@@ -23,6 +23,8 @@ const BOOST_REGEN = 13;
 const TICK_MS = 50;                // 20 Hz simulation + broadcast
 const TOTAL_TARGET = 7;            // bots fill up to this many players
 const MAX_HUMANS = 16;
+const ROOM_TTL_MS = 5 * 60 * 1000; // empty private rooms are deleted after this
+const ROOM_SWEEP_MS = 30 * 1000;
 
 const POWERUP_TYPES = {
   speed:  { dur: 5000 },
@@ -75,6 +77,7 @@ let powerups = [];                 // {id, cx, cy, type, born}
 let nextPuId = 1;
 let lastPuSpawn = 0;
 let personaCursor = 0;
+let curRoom = null;
 const rooms = new Map();
 
 function cleanRoomId(v) {
@@ -85,10 +88,14 @@ function roomTitle(v) {
   return String(v || 'public').trim().slice(0, 24) || 'public';
 }
 
-function makeRoom(id, label, password) {
+function makeRoom(id, label, password, opts) {
+  const o = opts || {};
   return {
     id, label,
     password: String(password || ''),
+    maxHumans: clamp(parseInt(o.max, 10) || MAX_HUMANS, 2, MAX_HUMANS),
+    botsOn: !(o.bots === 0 || o.bots === false),
+    emptySince: Date.now(),
     owner: new Int16Array(GRID * GRID).fill(-1),
     trailMap: new Int16Array(GRID * GRID).fill(-1),
     ownerDelta: [], trailDelta: [],
@@ -102,6 +109,7 @@ function makeRoom(id, label, password) {
 }
 
 function useRoom(room) {
+  curRoom = room;
   owner = room.owner;
   trailMap = room.trailMap;
   ownerDelta = room.ownerDelta;
@@ -127,7 +135,7 @@ function saveRoom(room) {
   room.personaCursor = personaCursor;
 }
 
-function getOrCreateRoom(rawId, rawPassword) {
+function getOrCreateRoom(rawId, rawPassword, opts) {
   const id = cleanRoomId(rawId);
   const password = String(rawPassword || '').slice(0, 48);
   let room = rooms.get(id);
@@ -136,7 +144,7 @@ function getOrCreateRoom(rawId, rawPassword) {
     if (!room.password && password) return { error: 'bad_password' };
     return { room };
   }
-  room = makeRoom(id, roomTitle(rawId), password);
+  room = makeRoom(id, roomTitle(rawId), password, opts);
   rooms.set(id, room);
   useRoom(room);
   ensureBots();
@@ -510,7 +518,9 @@ function humansCount() {
 }
 
 function ensureBots() {
-  const wantBots = Math.max(1, TOTAL_TARGET - humansCount());
+  const wantBots = curRoom && !curRoom.botsOn
+    ? 0
+    : Math.max(1, TOTAL_TARGET - humansCount());
   const bots = [...players.values()].filter(p => p.bot);
   for (let i = bots.length; i < wantBots; i++) {
     const used = new Set([...players.values()].map(p => p.name));
@@ -529,6 +539,28 @@ function ensureBots() {
     players.delete(b.id);
     broadcast({ t: 'pl', i: b.id });
   }
+}
+
+/* ---------------- room directory ---------------- */
+function liveHumans(room) {
+  let n = 0;
+  for (const p of room.players.values())
+    if (!p.bot && p.ws && p.ws.readyState === 1) n++;
+  return n;
+}
+
+function roomsInfo() {
+  const list = [];
+  for (const room of rooms.values()) {
+    list.push({
+      id: room.id, l: room.label,
+      h: liveHumans(room), mx: room.maxHumans,
+      lk: room.password ? 1 : 0, b: room.botsOn ? 1 : 0
+    });
+  }
+  // public first, then busiest rooms on top
+  list.sort((a, b) => (a.id === 'public' ? -1 : b.id === 'public' ? 1 : b.h - a.h));
+  return { t: 'rooms', list };
 }
 
 /* ---------------- serialization ---------------- */
@@ -563,6 +595,7 @@ function broadcastExcept(exclude, obj) {
 /* ---------------- tick loop ---------------- */
 setInterval(() => {
   for (const room of rooms.values()) {
+  if (!liveHumans(room)) continue;   // nobody watching: freeze the room
   useRoom(room);
   const dt = TICK_MS / 1000;
   const now = Date.now();
@@ -623,6 +656,18 @@ setInterval(() => {
   }
 }, TICK_MS);
 
+/* drop private rooms that have sat empty too long */
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, room] of rooms) {
+    if (id === 'public' || liveHumans(room)) continue;
+    if (room.emptySince && now - room.emptySince > ROOM_TTL_MS) {
+      rooms.delete(id);
+      console.log(`room ${id} expired (empty for ${Math.round(ROOM_TTL_MS / 60000)}m)`);
+    }
+  }
+}, ROOM_SWEEP_MS);
+
 /* ---------------- static file server ---------------- */
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -654,8 +699,13 @@ wss.on('connection', sock => {
     let m;
     try { m = JSON.parse(raw); } catch (e) { return; }
 
+    if (m.t === 'rooms' && !me) {   // lobby asks for the live room directory
+      send(sock, roomsInfo());
+      return;
+    }
+
     if (m.t === 'join' && !me) {
-      const result = getOrCreateRoom(m.r, m.pw);
+      const result = getOrCreateRoom(m.r, m.pw, { max: m.mx, bots: m.b });
       if (result.error) {
         send(sock, { t: 'err', code: result.error });
         sock.close();
@@ -663,7 +713,11 @@ wss.on('connection', sock => {
       }
       room = result.room;
       useRoom(room);
-      if (humansCount() >= MAX_HUMANS) { sock.close(); return; }
+      if (humansCount() >= Math.min(room.maxHumans, MAX_HUMANS)) {
+        send(sock, { t: 'err', code: 'room_full' });
+        sock.close();
+        return;
+      }
       const name = String(m.n || 'Player').slice(0, 14) || 'Player';
       const color = /^#[0-9a-f]{6}$/i.test(m.c || '') ? m.c : '#2563eb';
       me = makePlayer(name, color, false, sock);
@@ -671,9 +725,11 @@ wss.on('connection', sock => {
       spawn(me);
       ensureBots();
       countCells();
+      room.emptySince = 0;
       send(sock, {
         t: 'init', id: me.id,
         r: room.label,
+        ri: { id: room.id, l: room.label, lk: room.password ? 1 : 0, mx: room.maxHumans, b: room.botsOn ? 1 : 0 },
         o: Array.from(owner), tr: Array.from(trailMap),
         p: [...players.values()].map(serialize),
         pu: powerups.map(u => ({ i: u.id, x: u.cx, y: u.cy, tp: u.type }))
@@ -708,6 +764,7 @@ wss.on('connection', sock => {
     players.delete(p.id);
     broadcast({ t: 'pl', i: p.id });
     ensureBots();
+    if (humansCount() === 0) room.emptySince = Date.now();
     saveRoom(room);
     console.log(`- ${p.name} left room ${room.id} (${humansCount()} online)`);
   });

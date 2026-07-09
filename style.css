@@ -100,11 +100,86 @@ body{
 .play-card input::placeholder{color:#9aa7bd;font-weight:600}
 .play-card input:focus{outline-color:var(--blue);background:#fff}
 .room-grid{
-  display:grid;grid-template-columns:1fr 1fr;gap:12px;
+  display:grid;grid-template-columns:1fr 54px;gap:12px;
 }
-.room-grid input{
+.priv-panel input{
   height:54px;font-size:18px;border-radius:12px;
 }
+
+/* ---------- private room panel ---------- */
+.priv-toggle{
+  height:46px;border:2px dashed rgba(37,99,235,.35);border-radius:12px;
+  background:transparent;color:var(--blue);
+  font-family:inherit;font-size:16px;font-weight:700;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;gap:8px;
+  transition:background .15s,border-color .15s;
+}
+.priv-toggle:hover{background:rgba(37,99,235,.06);border-color:var(--blue)}
+.priv-toggle .chev{transition:transform .2s}
+.priv-toggle.open .chev{transform:rotate(180deg)}
+
+.priv-panel{
+  display:flex;flex-direction:column;gap:12px;
+  border-top:1px solid #e7ecf5;padding-top:16px;
+}
+.dice-btn{
+  border:none;border-radius:12px;background:#eef1f6;font-size:22px;cursor:pointer;
+  transition:background .15s,transform .1s;
+}
+.dice-btn:hover{background:#e2e8f4;transform:rotate(-14deg)}
+
+.room-opts{display:flex;gap:12px}
+.room-opt{
+  flex:1;display:flex;align-items:center;justify-content:space-between;gap:10px;
+  background:#eef1f6;border-radius:12px;padding:10px 14px;
+  font-size:14px;font-weight:700;color:var(--muted);
+}
+.room-opt select{
+  border:none;background:#fff;border-radius:8px;padding:6px 10px;
+  font-family:inherit;font-weight:700;color:var(--ink);cursor:pointer;
+}
+.room-opt.check{justify-content:flex-start;cursor:pointer}
+.room-opt.check input{width:18px;height:18px;accent-color:var(--blue);cursor:pointer}
+
+.room-btns{display:grid;grid-template-columns:1.15fr 1fr;gap:12px}
+.btn-primary.slim,.btn-secondary.slim{height:52px;font-size:16px;letter-spacing:.5px}
+.room-hint{
+  font-size:12.5px;color:var(--muted);font-weight:600;
+  text-align:center;line-height:1.45;
+}
+
+/* ---------- room browser (modal) ---------- */
+.room-list{display:flex;flex-direction:column;gap:10px;max-height:320px;overflow-y:auto}
+.room-row{
+  display:flex;justify-content:space-between;align-items:center;gap:12px;
+  border:none;background:#eef1f6;border-radius:12px;padding:14px 16px;cursor:pointer;
+  font-family:inherit;text-align:left;
+  transition:background .15s,transform .1s;
+}
+.room-row:hover{background:#e3ebfb;transform:translateX(3px)}
+.room-row-name{font-size:17px;font-weight:800;color:var(--ink);overflow:hidden;text-overflow:ellipsis}
+.room-row-meta{font-size:14px;font-weight:700;color:var(--muted);white-space:nowrap}
+.room-empty{text-align:center;color:var(--muted);font-weight:600;padding:18px 0}
+.room-refresh{
+  margin-top:12px;width:100%;height:44px;border:none;border-radius:12px;
+  background:#eef1f6;color:var(--blue);
+  font-family:inherit;font-weight:800;font-size:15px;cursor:pointer;
+  transition:background .15s;
+}
+.room-refresh:hover{background:#e3ebfb}
+
+/* ---------- in-game room badge ---------- */
+.room-badge{
+  position:absolute;left:20px;bottom:20px;z-index:5;
+  display:flex;align-items:center;gap:8px;
+  background:rgba(255,255,255,.94);border-radius:999px;box-shadow:var(--shadow);
+  padding:8px 10px 8px 18px;font-weight:800;font-size:15px;color:var(--ink);
+}
+.room-badge button{
+  border:none;background:#eef1f6;border-radius:999px;width:32px;height:32px;
+  cursor:pointer;font-size:15px;transition:background .15s;
+}
+.room-badge button:hover{background:#dbe7fb}
 
 .btn-primary{
   height:64px;border:none;border-radius:15px;background:var(--blue);
@@ -429,7 +504,9 @@ body{
 @media (max-width:760px){
   .menu-header{padding:16px 18px}
   .menu-main{gap:24px}
-  .room-grid{grid-template-columns:1fr}
+  .room-btns{grid-template-columns:1fr}
+  .room-opts{flex-direction:column}
+  .room-badge{bottom:14px;left:14px;font-size:13px;padding:6px 8px 6px 14px}
   .skin{width:86px;height:86px;border-radius:14px}
   .skin-square{width:46px;height:46px;border-radius:9px}
   .menu-footer{flex-direction:column;gap:8px;align-items:center}

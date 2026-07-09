@@ -22,14 +22,18 @@ https://your-user.github.io/your-repo/?server=wss://your-ihata-server.example.co
 
 ## Private Rooms
 
-Use the Room Name and Password fields on the start screen.
+Open the **Private Room** panel on the start screen.
 
-Players with the same room name and same password join the same arena. A different room name creates a separate arena. If a room was created with a password, players must enter that exact password to join it.
+- Same room name + same password = same match. A different room name creates a separate arena.
+- The first player creates the room and sets its rules: **max players** (2–16) and whether bots fill empty slots.
+- **Browse Rooms** lists all live rooms with player counts; locked rooms show a 🔒 icon.
+- In a room, tap the 🔗 button on the in-game badge to copy an invite link (it includes the room name and password).
+- Empty private rooms are deleted automatically after 5 minutes.
 
-You can prefill the room name from the URL:
+Invite links prefill the room fields from the URL:
 
 ```text
-https://your-user.github.io/your-repo/?room=friends&server=wss://your-ihata-server.example.com
+https://your-user.github.io/your-repo/?room=friends&pass=secret&server=wss://your-ihata-server.example.com
 ```
 
 ## Local Test
