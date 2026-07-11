@@ -18,15 +18,21 @@ const BOOST_REGEN = 13;           // energy per second while idle
 const MAP_SIZES = [104, 150, 230]; // minimap diameter presets (px)
 
 const POWERUP_TYPES = {
-  speed:  { icon: '⚡', color: '#f59e0b', dur: 5000 },
-  shield: { icon: '🛡️', color: '#3b82f6', dur: 7000 },
-  bomb:   { icon: '💥', color: '#a855f7', dur: 0 },
-  energy: { icon: '🔋', color: '#22c55e', dur: 0 }
+  speed:  { icon: '⚡', image: 'resimler/h%C4%B1z.png', color: '#f59e0b', dur: 5000 },
+  shield: { icon: '🛡️', image: 'resimler/kalkan.png', color: '#3b82f6', dur: 7000 },
+  bomb:   { icon: '💥', image: 'resimler/bomba.png', color: '#a855f7', dur: 0 },
+  energy: { icon: '🔋', image: 'resimler/enerji.png', color: '#22c55e', dur: 0 }
 };
 const POWERUP_KEYS = Object.keys(POWERUP_TYPES);
 const POWERUP_INTERVAL = 5;       // seconds between spawns
 const POWERUP_MAX = 6;            // max on the field at once
 const POWERUP_LIFE = 20000;       // ms before an unclaimed pickup despawns
+const powerupImages = {};
+for (const key of POWERUP_KEYS) {
+  const img = new Image();
+  img.src = POWERUP_TYPES[key].image;
+  powerupImages[key] = img;
+}
 
 // bot personalities: hunters chase kills, farmers grow quietly, expanders carve huge loops
 const PERSONAS = {
@@ -1429,10 +1435,21 @@ function render() {
     ctx.beginPath();
     ctx.arc(ux, uy, CELL * 0.42 * pulse, 0, Math.PI * 2);
     ctx.fill(); ctx.stroke();
-    ctx.font = `${Math.round(CELL * 0.5 * pulse)}px sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(info.icon, ux, uy + 1);
+    const img = powerupImages[u.type];
+    if (img && img.complete && img.naturalWidth) {
+      const size = CELL * 0.78 * pulse;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(ux, uy, CELL * 0.36 * pulse, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.drawImage(img, ux - size / 2, uy - size / 2, size, size);
+      ctx.restore();
+    } else {
+      ctx.font = `${Math.round(CELL * 0.5 * pulse)}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(info.icon, ux, uy + 1);
+    }
   }
 
   // world border

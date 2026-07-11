@@ -695,7 +695,9 @@ const MIME = {
 };
 
 const httpServer = http.createServer((req, res) => {
-  let file = req.url.split('?')[0];
+  let file;
+  try { file = decodeURIComponent(req.url.split('?')[0]); }
+  catch (e) { res.writeHead(400); res.end('Bad request'); return; }
   if (file === '/') file = '/index.html';
   const full = path.join(__dirname, path.normalize(file));
   if (!full.startsWith(__dirname)) { res.writeHead(403); res.end(); return; }
